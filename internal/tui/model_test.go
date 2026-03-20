@@ -394,3 +394,371 @@ func TestMaskSecretValue(t *testing.T) {
 		})
 	}
 }
+
+func TestModel_NKeyOpensCreateEditor(t *testing.T) {
+	m := newTestModel("0 3 * * * /usr/local/bin/backup-db\n")
+	m = loadModel(m)
+
+	updated, _ := m.Update(press('n', "n", 0))
+	m = updated.(Model)
+
+	if m.state != stateCreating {
+		t.Fatalf("expected stateCreating, got %d", m.state)
+	}
+	if m.editor == nil {
+		t.Fatal("editor should be initialized")
+	}
+	if m.editor.mode != editorModeCreate {
+		t.Fatalf("expected create mode, got %d", m.editor.mode)
+	}
+}
+
+func TestModel_EKeyOpensEditEditor(t *testing.T) {
+	m := newTestModel("0 3 * * * /usr/local/bin/backup-db\n")
+	m = loadModel(m)
+
+	updated, _ := m.Update(press('e', "e", 0))
+	m = updated.(Model)
+
+	if m.state != stateEditing {
+		t.Fatalf("expected stateEditing, got %d", m.state)
+	}
+	if m.editor == nil {
+		t.Fatal("editor should be initialized")
+	}
+	if m.editor.mode != editorModeEdit {
+		t.Fatalf("expected edit mode, got %d", m.editor.mode)
+	}
+	if m.editor.draft.Command != "/usr/local/bin/backup-db" {
+		t.Fatalf("expected command from job, got %q", m.editor.draft.Command)
+	}
+}
+
+func TestModel_EditorEscCancelClean(t *testing.T) {
+	m := newTestModel("0 3 * * * /usr/local/bin/backup-db\n")
+	m = loadModel(m)
+
+	// Open editor
+	updated, _ := m.Update(press('n', "n", 0))
+	m = updated.(Model)
+
+	// Esc should cancel without confirm since not dirty
+	updated, _ = m.Update(press(tea.KeyEsc, "esc", 0))
+	m = updated.(Model)
+
+	if m.state != stateReady {
+		t.Fatalf("expected stateReady after clean cancel, got %d", m.state)
+	}
+	if m.editor != nil {
+		t.Fatal("editor should be nil after cancel")
+	}
+}
+
+func TestModel_EditorDirtyCancelTriggersConfirm(t *testing.T) {
+	m := newTestModel("0 3 * * * /usr/local/bin/backup-db\n")
+	m = loadModel(m)
+
+	// Open editor
+	updated, _ := m.Update(press('n', "n", 0))
+	m = updated.(Model)
+
+	// Type something to make it dirty
+	updated, _ = m.Update(press('5', "5", 0))
+	m = updated.(Model)
+
+	if !m.isDirty() {
+		t.Fatal("editor should be dirty after typing")
+	}
+
+	// Esc should trigger confirm discard
+	updated, _ = m.Update(press(tea.KeyEsc, "esc", 0))
+	m = updated.(Model)
+
+	if m.state != stateConfirmDiscard {
+		t.Fatalf("expected stateConfirmDiscard, got %d", m.state)
+	}
+
+	// Press y to discard
+	updated, _ = m.Update(press('y', "y", 0))
+	m = updated.(Model)
+
+	if m.state != stateReady {
+		t.Fatalf("expected stateReady after discard, got %d", m.state)
+	}
+}
+
+func TestModel_EditorConfirmDiscardNo(t *testing.T) {
+	m := newTestModel("0 3 * * * /usr/local/bin/backup-db\n")
+	m = loadModel(m)
+
+	// Open create editor
+	updated, _ := m.Update(press('n', "n", 0))
+	m = updated.(Model)
+
+	// Make dirty
+	updated, _ = m.Update(press('5', "5", 0))
+	m = updated.(Model)
+
+	// Esc -> confirm discard
+	updated, _ = m.Update(press(tea.KeyEsc, "esc", 0))
+	m = updated.(Model)
+
+	// Press n to keep editing
+	updated, _ = m.Update(press('n', "n", 0))
+	m = updated.(Model)
+
+	if m.state != stateCreating {
+		t.Fatalf("expected stateCreating after keeping, got %d", m.state)
+	}
+	if m.editor == nil {
+		t.Fatal("editor should still exist")
+	}
+}
+
+func TestModel_EditorSaveTriggersApply(t *testing.T) {
+	m := newTestModel("0 3 * * * /usr/local/bin/backup-db\n")
+	m = loadModel(m)
+
+	// Open create editor
+	updated, _ := m.Update(press('n', "n", 0))
+	m = updated.(Model)
+
+	// Navigate to command field and type something
+	// Tab through fields: schedKind -> minute -> hour -> dom -> month -> dow -> tz -> command
+	for i := 0; i < 7; i++ {
+		updated, _ = m.Update(press(tea.KeyTab, "tab", 0))
+		m = updated.(Model)
+	}
+
+	// Type a command
+	for _, ch := range "/bin/echo" {
+		updated, _ = m.Update(press(ch, string(ch), 0))
+		m = updated.(Model)
+	}
+
+	// Press enter to save
+	updated, cmd := m.Update(press(tea.KeyEnter, "enter", 0))
+	m = updated.(Model)
+
+	if m.state != stateApplying {
+		t.Fatalf("expected stateApplying after save, got %d", m.state)
+	}
+	if cmd == nil {
+		t.Fatal("should have returned a command for the apply")
+	}
+}
+
+func TestModel_EditorRenderNoPanic(t *testing.T) {
+	m := newTestModel("0 3 * * * /usr/local/bin/backup-db\n")
+	m = loadModel(m)
+
+	// Open create editor
+	updated, _ := m.Update(press('n', "n", 0))
+	m = updated.(Model)
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("renderEditor panicked: %v", r)
+		}
+	}()
+
+	view := m.View()
+	if view.Content == "" {
+		t.Fatal("view should not be empty in editor state")
+	}
+}
+
+func TestModel_EditorFieldNavigation(t *testing.T) {
+	m := newTestModel("0 3 * * * /usr/local/bin/backup-db\n")
+	m = loadModel(m)
+
+	// Open create editor
+	updated, _ := m.Update(press('n', "n", 0))
+	m = updated.(Model)
+
+	if m.editor.focusField != fieldMinute {
+		t.Fatalf("initial focus should be fieldMinute, got %d", m.editor.focusField)
+	}
+
+	// Tab to next field
+	updated, _ = m.Update(press(tea.KeyTab, "tab", 0))
+	m = updated.(Model)
+	if m.editor.focusField != fieldHour {
+		t.Fatalf("after tab, focus should be fieldHour, got %d", m.editor.focusField)
+	}
+
+	// Shift+tab back
+	updated, _ = m.Update(press(tea.KeyTab, "shift+tab", tea.ModShift))
+	m = updated.(Model)
+	// Note: shift+tab sends different key string
+}
+
+func TestModel_EditorValidationErrors(t *testing.T) {
+	m := newTestModel("0 3 * * * /usr/local/bin/backup-db\n")
+	m = loadModel(m)
+
+	// Open create editor
+	updated, _ := m.Update(press('n', "n", 0))
+	m = updated.(Model)
+
+	// Clear the minute field
+	m.editor.fieldBuf = ""
+	m.commitFieldBuf()
+
+	// Also clear command
+	m.editor.draft.Command = ""
+
+	// Try to save
+	updated, _ = m.Update(press(tea.KeyEnter, "enter", 0))
+	m = updated.(Model)
+
+	// Should still be in editor state with errors
+	if m.state == stateApplying {
+		t.Fatal("should not apply with validation errors")
+	}
+	if len(m.editor.fieldErrs) == 0 {
+		t.Fatal("should have field errors")
+	}
+}
+
+func TestModel_EditorDescriptorValidationMapsToVisibleField(t *testing.T) {
+	m := newTestModel("0 3 * * * /usr/local/bin/backup-db\n")
+	m = loadModel(m)
+
+	// Open create editor
+	updated, _ := m.Update(press('n', "n", 0))
+	m = updated.(Model)
+
+	// Cycle to descriptor mode
+	m.cycleSchedKind()
+	if m.editor.draft.SchedKind != domain.ScheduleKindDescriptor {
+		t.Fatalf("expected descriptor kind, got %q", m.editor.draft.SchedKind)
+	}
+
+	// Set an invalid descriptor that will fail full-expression validation
+	m.editor.draft.Descriptor = "@bogus"
+	m.editor.fieldBuf = "@bogus"
+	m.editor.draft.Command = "/bin/echo"
+
+	// Try to save
+	updated, _ = m.Update(press(tea.KeyEnter, "enter", 0))
+	m = updated.(Model)
+
+	if m.state == stateApplying {
+		t.Fatal("should not apply with invalid descriptor")
+	}
+
+	// The error should be mapped to fieldDescriptor, which is visible
+	if _, ok := m.editor.fieldErrs[fieldDescriptor]; !ok {
+		t.Fatalf("expected error on fieldDescriptor, got errors: %v", m.editor.fieldErrs)
+	}
+}
+
+func TestModel_FieldFromNameExpressionMapping(t *testing.T) {
+	tests := []struct {
+		name  string
+		kind  domain.ScheduleKind
+		field string
+		want  editorField
+	}{
+		{"standard expression", domain.ScheduleKindStandard, "expression", fieldMinute},
+		{"descriptor expression", domain.ScheduleKindDescriptor, "expression", fieldDescriptor},
+		{"reboot expression", domain.ScheduleKindReboot, "expression", fieldDescriptor},
+		{"minute field", domain.ScheduleKindStandard, "minute", fieldMinute},
+		{"command field", domain.ScheduleKindStandard, "command", fieldCommand},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := fieldFromName(tt.field, tt.kind)
+			if got != tt.want {
+				t.Errorf("fieldFromName(%q, %q) = %d, want %d", tt.field, tt.kind, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestModel_EKeyNoJobNoop(t *testing.T) {
+	m := newTestModel("")
+	m = loadModel(m)
+
+	updated, _ := m.Update(press('e', "e", 0))
+	m = updated.(Model)
+
+	if m.state != stateReady {
+		t.Fatalf("e with no jobs should stay in stateReady, got %d", m.state)
+	}
+	if m.editor != nil {
+		t.Fatal("editor should not be opened with no jobs")
+	}
+}
+
+func TestModel_EditorViewDoesNotMutateDirty(t *testing.T) {
+	m := newTestModel("0 3 * * * /usr/local/bin/backup-db\n")
+	m = loadModel(m)
+
+	// Open create editor
+	updated, _ := m.Update(press('n', "n", 0))
+	m = updated.(Model)
+
+	if m.isDirty() {
+		t.Fatal("editor should not be dirty immediately after opening")
+	}
+
+	// Capture draft state before View
+	draftBefore := m.editor.draft
+
+	// Call View() — must not mutate state
+	_ = m.View()
+
+	if m.isDirty() {
+		t.Fatal("View() should not make editor dirty")
+	}
+	if m.editor.draft != draftBefore {
+		t.Fatal("View() should not mutate editor draft")
+	}
+}
+
+func TestModel_EditorCleanEscDoesNotPrompt(t *testing.T) {
+	m := newTestModel("0 3 * * * /usr/local/bin/backup-db\n")
+	m = loadModel(m)
+
+	// Open create editor
+	updated, _ := m.Update(press('n', "n", 0))
+	m = updated.(Model)
+
+	// Esc immediately (no edits made)
+	updated, _ = m.Update(press(tea.KeyEsc, "esc", 0))
+	m = updated.(Model)
+
+	if m.state == stateConfirmDiscard {
+		t.Fatal("clean cancel should not trigger discard prompt")
+	}
+	if m.state != stateReady {
+		t.Fatalf("expected stateReady, got %d", m.state)
+	}
+	if m.editor != nil {
+		t.Fatal("editor should be nil after clean cancel")
+	}
+}
+
+func TestModel_EditorViewMultipleCalls(t *testing.T) {
+	m := newTestModel("0 3 * * * /usr/local/bin/backup-db\n")
+	m = loadModel(m)
+
+	// Open editor and type something
+	updated, _ := m.Update(press('n', "n", 0))
+	m = updated.(Model)
+	updated, _ = m.Update(press('5', "5", 0))
+	m = updated.(Model)
+
+	// Call View() multiple times — must be idempotent
+	for i := 0; i < 5; i++ {
+		_ = m.View()
+	}
+
+	// Draft should still match what we typed, not be corrupted
+	preview := m.previewDraft()
+	if preview.Minute != "05" {
+		t.Fatalf("after multiple View() calls, minute should be '05', got %q", preview.Minute)
+	}
+}

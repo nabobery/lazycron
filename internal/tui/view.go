@@ -31,10 +31,15 @@ func (m Model) renderContent() string {
 			m.width, m.height, minUsableWidth, minUsableHeight)
 	}
 
+	// Editor overlay takes over the screen
+	if m.state == stateEditing || m.state == stateCreating || m.state == stateConfirmDiscard {
+		return m.renderEditor(m.width, m.height)
+	}
+
 	var sections []string
 
 	// Title bar
-	title := titleStyle.Render(" lazycron v0.1.0 ")
+	title := titleStyle.Render(" lazycron v0.2.0 ")
 	sections = append(sections, title)
 
 	// Banner
@@ -328,8 +333,12 @@ func (m Model) renderHelp() string {
 		parts = append(parts, "loading...")
 	case stateDriftDetected:
 		parts = append(parts, "r:reload  q:quit")
+	case stateEditing, stateCreating:
+		parts = append(parts, "tab/shift+tab:fields  enter:save  esc:cancel")
+	case stateConfirmDiscard:
+		parts = append(parts, "y:discard  n:keep editing")
 	default:
-		parts = append(parts, "j/k:navigate  space:toggle  d:delete  x:run  /:search  r:reload  q:quit")
+		parts = append(parts, "j/k:navigate  space:toggle  d:delete  x:run  n:new  e:edit  /:search  r:reload  q:quit")
 	}
 
 	return helpStyle.Render(strings.Join(parts, "  "))

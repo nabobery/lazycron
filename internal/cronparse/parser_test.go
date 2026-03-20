@@ -209,18 +209,18 @@ func TestParse_MixedFixture(t *testing.T) {
 	}
 
 	// CRON_TZ job should have timezone
-	var tzJob *domain.CronJob
+	tzJobIndex := -1
 	for i := range jobs {
 		if jobs[i].Schedule.Timezone != "" {
-			tzJob = &jobs[i]
+			tzJobIndex = i
 			break
 		}
 	}
-	if tzJob == nil {
+	if tzJobIndex < 0 {
 		t.Fatal("expected a job with timezone")
 	}
-	if tzJob.Schedule.Timezone != "America/New_York" {
-		t.Errorf("expected timezone America/New_York, got %s", tzJob.Schedule.Timezone)
+	if jobs[tzJobIndex].Schedule.Timezone != "America/New_York" {
+		t.Errorf("expected timezone America/New_York, got %s", jobs[tzJobIndex].Schedule.Timezone)
 	}
 
 	if len(issues) != 1 {

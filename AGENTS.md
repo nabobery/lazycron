@@ -12,16 +12,17 @@ Terminal UI for managing cron jobs. Go + Bubble Tea v2 TUI with document-preserv
 
 ```
 lazycron/
-├── cmd/lazycron/       # Entry point (main.go)
+├── cmd/lazycron/       # Entry point (main.go) — dispatches CLI or TUI
 ├── internal/
-│   ├── app/            # ApplyService: load, toggle, delete with drift detection
+│   ├── app/            # ApplyService: load, toggle, delete, create, edit with drift detection
+│   ├── cli/            # Non-interactive CLI subcommands (list, validate, run, doctor)
 │   ├── cronparse/      # Document-preserving cron parser (Parse, Render)
-│   ├── domain/         # Core types (CronJob, CronDocument, ScheduleSpec, etc.)
+│   ├── domain/         # Core types (CronJob, CronDocument, ScheduleSpec, JobDraft, etc.)
 │   ├── platform/crontab/  # crontab Client interface + system adapter
 │   ├── runner/         # Subprocess execution with bounded output
 │   ├── schedule/       # Next-run calculation + human descriptions
 │   ├── testutil/       # Shared test helpers
-│   └── tui/            # Bubble Tea Model/Update/View (9 files)
+│   └── tui/            # Bubble Tea Model/Update/View + editor (10 files)
 ├── docs/
 │   ├── specs/          # Technical specification
 │   └── plans/          # PRD
@@ -35,9 +36,13 @@ lazycron/
 | Add TUI feature | `internal/tui/` | Model/Update/View pattern |
 | Change parsing | `internal/cronparse/parser.go` | Document-preserving, must preserve raw fidelity |
 | Safe crontab write | `internal/app/apply.go` | Drift detection via baseline comparison |
+| Create/edit jobs | `internal/app/edit.go` | CreateJob/EditJob patch only targeted lines |
 | Add domain type | `internal/domain/types.go` | Shared across all packages |
+| Validation helpers | `internal/domain/validation.go` | Field-level + full-expression validation |
 | Schedule math | `internal/schedule/service.go` | Uses robfig/cron/v3 |
 | Job execution | `internal/runner/runner.go` | Bounded buffer, process group for cancellation |
+| CLI subcommands | `internal/cli/cli.go` | list, validate, run, doctor via flag.NewFlagSet |
+| TUI editor | `internal/tui/editor.go` | Modal create/edit form with preview |
 
 ## CONVENTIONS
 

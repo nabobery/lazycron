@@ -2,10 +2,22 @@ package tui
 
 import (
 	tea "charm.land/bubbletea/v2"
+
+	"github.com/avinashchangrani/lazycron/internal/domain"
 )
 
 func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
+
+	// Handle editor states
+	if m.state == stateEditing || m.state == stateCreating {
+		return m.handleEditorKey(msg)
+	}
+
+	// Handle confirm-discard modal
+	if m.state == stateConfirmDiscard {
+		return m.handleConfirmDiscardKey(key)
+	}
 
 	// Handle filtering mode
 	if m.filtering {
@@ -112,6 +124,19 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, m.loadCmd()
 		}
 
+	case "n":
+		if m.state == stateReady {
+			m.openCreateEditor()
+			return m, nil
+		}
+
+	case "e":
+		job := m.selectedJob()
+		if job != nil && m.state == stateReady {
+			m.openEditEditor(*job)
+			return m, nil
+		}
+
 	case "g":
 		m.selected = 0
 	case "G":
@@ -121,6 +146,141 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+func (m Model) handleEditorKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	key := msg.String()
+
+	if m.editor == nil {
+		m.state = stateReady
+		return m, nil
+	}
+
+	// Schedule kind field uses left/right to cycle, not text input
+	if m.editor.focusField == fieldSchedKind {
+		switch key {
+		case "left", "right", "h", "l", "space":
+			m.cycleSchedKind()
+			return m, nil
+		case "tab", "down", "j":
+			m.editorNextField()
+			return m, nil
+		case "shift+tab", "up", "k":
+			m.editorPrevField()
+			return m, nil
+		case "enter":
+			return m.editorTrySave()
+		case "esc":
+			return m.editorTryCancel()
+		}
+		return m, nil
+	}
+
+	switch key {
+	case "tab", "down":
+		m.editorNextField()
+		return m, nil
+	case "shift+tab", "up":
+		m.editorPrevField()
+		return m, nil
+	case "enter":
+		return m.editorTrySave()
+	case "esc":
+		return m.editorTryCancel()
+	case "backspace":
+		if len(m.editor.fieldBuf) > 0 {
+			m.editor.fieldBuf = m.editor.fieldBuf[:len(m.editor.fieldBuf)-1]
+		}
+		return m, nil
+	default:
+		if len(key) == 1 || key == "space" {
+			ch := key
+			if key == "space" {
+				ch = " "
+			}
+			m.editor.fieldBuf += ch
+		}
+		return m, nil
+	}
+}
+
+func (m Model) editorTrySave() (tea.Model, tea.Cmd) {
+	errs := m.validateEditor()
+	m.editor.fieldErrs = make(map[editorField]string)
+
+	if len(errs) > 0 {
+		kind := m.editor.draft.SchedKind
+		for _, e := range errs {
+			f := fieldFromName(e.Field, kind)
+			if f >= 0 {
+				m.editor.fieldErrs[f] = e.Message
+			}
+		}
+		return m, nil
+	}
+
+	m.state = stateApplying
+	cmd := m.editorSaveCmd()
+	m.editor = nil
+	return m, cmd
+}
+
+func (m Model) editorTryCancel() (tea.Model, tea.Cmd) {
+	if m.isDirty() {
+		m.state = stateConfirmDiscard
+		return m, nil
+	}
+	m.editor = nil
+	m.state = stateReady
+	return m, nil
+}
+
+func (m Model) handleConfirmDiscardKey(key string) (tea.Model, tea.Cmd) {
+	switch key {
+	case "y", "Y":
+		m.editor = nil
+		m.state = stateReady
+	case "n", "N", "esc":
+		if m.editor != nil {
+			if m.editor.mode == editorModeCreate {
+				m.state = stateCreating
+			} else {
+				m.state = stateEditing
+			}
+		} else {
+			m.state = stateReady
+		}
+	}
+	return m, nil
+}
+
+func fieldFromName(name string, kind domain.ScheduleKind) editorField {
+	switch name {
+	case "minute":
+		return fieldMinute
+	case "hour":
+		return fieldHour
+	case "day_of_month":
+		return fieldDayOfMonth
+	case "month":
+		return fieldMonth
+	case "day_of_week":
+		return fieldDayOfWeek
+	case "descriptor":
+		return fieldDescriptor
+	case "timezone":
+		return fieldTimezone
+	case "command":
+		return fieldCommand
+	case "expression":
+		if kind == domain.ScheduleKindDescriptor || kind == domain.ScheduleKindReboot {
+			return fieldDescriptor
+		}
+		return fieldMinute
+	case "schedule_kind":
+		return fieldSchedKind
+	}
+	return -1
 }
 
 func (m Model) handleFilterKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {

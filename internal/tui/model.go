@@ -35,6 +35,8 @@ type Model struct {
 
 	bannerMsg *banner
 	err       error
+
+	editor *editorState
 }
 
 func NewModel(applySvc *app.ApplyService, scheduleSvc *schedule.Service, r *runner.Runner) Model {

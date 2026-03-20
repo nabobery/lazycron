@@ -244,18 +244,18 @@ func TestTogglePreservesExactRawLine(t *testing.T) {
 
 	// Toggle enable again
 	jobs = svc.Jobs()
-	var disabledJob *domain.CronJob
+	disabledJobIndex := -1
 	for i := range jobs {
 		if !jobs[i].Enabled {
-			disabledJob = &jobs[i]
+			disabledJobIndex = i
 			break
 		}
 	}
-	if disabledJob == nil {
+	if disabledJobIndex < 0 {
 		t.Fatal("expected a disabled job after toggle")
 	}
 
-	err = svc.Toggle(ctx, disabledJob.ID)
+	err = svc.Toggle(ctx, jobs[disabledJobIndex].ID)
 	if err != nil {
 		t.Fatalf("toggle enable failed: %v", err)
 	}

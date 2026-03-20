@@ -14,6 +14,9 @@ const (
 	stateRunning
 	stateApplying
 	stateDriftDetected
+	stateEditing
+	stateCreating
+	stateConfirmDiscard
 )
 
 type focusedPane int
@@ -42,4 +45,61 @@ type applyResultMsg struct {
 type runResultMsg struct {
 	record domain.RunRecord
 	err    error
+}
+
+type editorMode int
+
+const (
+	editorModeCreate editorMode = iota
+	editorModeEdit
+)
+
+type editorField int
+
+const (
+	fieldSchedKind editorField = iota
+	fieldMinute
+	fieldHour
+	fieldDayOfMonth
+	fieldMonth
+	fieldDayOfWeek
+	fieldDescriptor
+	fieldTimezone
+	fieldCommand
+	fieldCount // sentinel
+)
+
+func (f editorField) label() string {
+	switch f {
+	case fieldSchedKind:
+		return "Schedule Type"
+	case fieldMinute:
+		return "Minute"
+	case fieldHour:
+		return "Hour"
+	case fieldDayOfMonth:
+		return "Day of Month"
+	case fieldMonth:
+		return "Month"
+	case fieldDayOfWeek:
+		return "Day of Week"
+	case fieldDescriptor:
+		return "Descriptor"
+	case fieldTimezone:
+		return "Timezone"
+	case fieldCommand:
+		return "Command"
+	default:
+		return ""
+	}
+}
+
+type editorState struct {
+	mode          editorMode
+	draft         domain.JobDraft
+	originalDraft domain.JobDraft // snapshot at open, for dirty comparison
+	targetJobID   string
+	focusField    editorField
+	fieldBuf      string // current editing buffer for the focused field
+	fieldErrs     map[editorField]string
 }
