@@ -20,7 +20,7 @@ func NewService() *Service {
 }
 
 func (s *Service) NextRuns(spec domain.ScheduleSpec, now time.Time, n int) ([]time.Time, error) {
-	if spec.Kind == domain.ScheduleKindReboot {
+	if spec.Kind == domain.ScheduleKindReboot || spec.Kind == domain.ScheduleKindPeriodic {
 		return nil, nil
 	}
 
@@ -56,11 +56,30 @@ func (s *Service) Describe(spec domain.ScheduleSpec) string {
 		return "Runs on system reboot"
 	}
 
+	if spec.Kind == domain.ScheduleKindPeriodic {
+		return describePeriodicInterval(spec.Expression)
+	}
+
 	desc := describeExpression(spec.Expression)
 	if spec.Timezone != "" {
 		desc += fmt.Sprintf(" (%s)", spec.Timezone)
 	}
 	return desc
+}
+
+func describePeriodicInterval(interval string) string {
+	switch domain.PeriodicInterval(interval) {
+	case domain.PeriodicHourly:
+		return "Hourly (periodic directory; via run-parts)"
+	case domain.PeriodicDaily:
+		return "Daily (periodic directory; via anacron/run-parts)"
+	case domain.PeriodicWeekly:
+		return "Weekly (periodic directory; via anacron/run-parts)"
+	case domain.PeriodicMonthly:
+		return "Monthly (periodic directory; via anacron/run-parts)"
+	default:
+		return fmt.Sprintf("Periodic: %s (via run-parts)", interval)
+	}
 }
 
 func describeExpression(expr string) string {

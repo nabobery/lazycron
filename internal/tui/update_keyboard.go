@@ -1,6 +1,9 @@
 package tui
 
 import (
+	"fmt"
+	"os/user"
+
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/avinashchangrani/lazycron/internal/domain"
@@ -99,6 +102,10 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "space":
 		job := m.selectedJob()
 		if job != nil && m.state == stateReady {
+			if job.ReadOnly {
+				m.bannerMsg = &banner{message: "Cannot toggle: system source is read-only", isError: false}
+				return m, nil
+			}
 			m.state = stateApplying
 			return m, m.toggleCmd(job.ID)
 		}
@@ -106,12 +113,23 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "d":
 		job := m.selectedJob()
 		if job != nil && m.state == stateReady {
+			if job.ReadOnly {
+				m.bannerMsg = &banner{message: "Cannot delete: system source is read-only", isError: false}
+				return m, nil
+			}
 			m.state = stateConfirmDelete
 		}
 
 	case "x":
 		job := m.selectedJob()
 		if job != nil && m.state == stateReady {
+			if job.RunAsUser != "" {
+				if u, err := user.Current(); err == nil && u.Username != job.RunAsUser {
+					m.bannerMsg = &banner{
+						message: fmt.Sprintf("Note: job runs as %s in cron; running now as %s", job.RunAsUser, u.Username),
+					}
+				}
+			}
 			m.state = stateRunning
 			cmd := m.startRun(*job)
 			return m, cmd
@@ -133,6 +151,10 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "e":
 		job := m.selectedJob()
 		if job != nil && m.state == stateReady {
+			if job.ReadOnly {
+				m.bannerMsg = &banner{message: "Cannot edit: system source is read-only", isError: false}
+				return m, nil
+			}
 			m.openEditEditor(*job)
 			return m, nil
 		}

@@ -13,6 +13,20 @@ var testSource = domain.CronSource{
 	User: "testuser",
 }
 
+var testSystemSource = domain.CronSource{
+	Kind:    domain.SourceKindSystem,
+	Subkind: domain.SubkindSystemCrontab,
+	Path:    "/etc/crontab",
+	Label:   "/etc/crontab",
+}
+
+var testCronDSource = domain.CronSource{
+	Kind:    domain.SourceKindSystem,
+	Subkind: domain.SubkindCronD,
+	Path:    "/etc/cron.d/backups",
+	Label:   "cron.d/backups",
+}
+
 func TestParse_ValidFixture(t *testing.T) {
 	doc, jobs, issues := Parse(testutil.FixtureValid, testSource)
 
@@ -325,4 +339,213 @@ func TestParse_TabSeparated(t *testing.T) {
 			t.Errorf("expected command /usr/local/bin/tab-fields, got %q", job.Command)
 		}
 	})
+}
+
+func TestParse_SystemCrontab(t *testing.T) {
+	_, jobs, issues := Parse(testutil.FixtureSystemCrontab, testSystemSource)
+
+	if len(issues) != 0 {
+		t.Fatalf("expected 0 issues, got %d: %v", len(issues), issues)
+	}
+	if len(jobs) != 4 {
+		t.Fatalf("expected 4 jobs, got %d", len(jobs))
+	}
+
+	tests := []struct {
+		idx      int
+		expr     string
+		user     string
+		readOnly bool
+	}{
+		{0, "17 * * * *", "root", true},
+		{1, "25 6 * * *", "root", true},
+		{2, "47 6 * * 0", "root", true},
+		{3, "52 6 1 * *", "root", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(jobs[tt.idx].Command[:20], func(t *testing.T) {
+			job := jobs[tt.idx]
+			if job.Schedule.Expression != tt.expr {
+				t.Errorf("expected expression %q, got %q", tt.expr, job.Schedule.Expression)
+			}
+			if job.RunAsUser != tt.user {
+				t.Errorf("expected RunAsUser %q, got %q", tt.user, job.RunAsUser)
+			}
+			if job.ReadOnly != tt.readOnly {
+				t.Errorf("expected ReadOnly=%v, got %v", tt.readOnly, job.ReadOnly)
+			}
+			if job.Source.Kind != domain.SourceKindSystem {
+				t.Errorf("expected system source kind, got %s", job.Source.Kind)
+			}
+		})
+	}
+}
+
+func TestParse_SystemCronD(t *testing.T) {
+	_, jobs, issues := Parse(testutil.FixtureSystemCronD, testCronDSource)
+
+	if len(issues) != 0 {
+		t.Fatalf("expected 0 issues, got %d: %v", len(issues), issues)
+	}
+	if len(jobs) != 4 {
+		t.Fatalf("expected 4 jobs, got %d", len(jobs))
+	}
+
+	t.Run("standard 6-field", func(t *testing.T) {
+		job := jobs[0]
+		if job.Schedule.Expression != "0 2 * * *" {
+			t.Errorf("expected expression '0 2 * * *', got %q", job.Schedule.Expression)
+		}
+		if job.RunAsUser != "root" {
+			t.Errorf("expected RunAsUser root, got %q", job.RunAsUser)
+		}
+		if job.Command != "/usr/local/bin/backup --full" {
+			t.Errorf("expected command '/usr/local/bin/backup --full', got %q", job.Command)
+		}
+	})
+
+	t.Run("non-root user", func(t *testing.T) {
+		job := jobs[1]
+		if job.RunAsUser != "monitor" {
+			t.Errorf("expected RunAsUser monitor, got %q", job.RunAsUser)
+		}
+		if job.Command != "/usr/local/bin/check-health" {
+			t.Errorf("expected command /usr/local/bin/check-health, got %q", job.Command)
+		}
+	})
+
+	t.Run("descriptor with user", func(t *testing.T) {
+		job := jobs[2]
+		if job.Schedule.Kind != domain.ScheduleKindDescriptor {
+			t.Errorf("expected descriptor kind, got %s", job.Schedule.Kind)
+		}
+		if job.RunAsUser != "root" {
+			t.Errorf("expected RunAsUser root, got %q", job.RunAsUser)
+		}
+		if job.Command != "/usr/local/bin/cleanup-old-logs" {
+			t.Errorf("expected command /usr/local/bin/cleanup-old-logs, got %q", job.Command)
+		}
+	})
+
+	t.Run("reboot with user", func(t *testing.T) {
+		job := jobs[3]
+		if job.Schedule.Kind != domain.ScheduleKindReboot {
+			t.Errorf("expected reboot kind, got %s", job.Schedule.Kind)
+		}
+		if job.RunAsUser != "www-data" {
+			t.Errorf("expected RunAsUser www-data, got %q", job.RunAsUser)
+		}
+		if job.Command != "/usr/local/bin/start-webapp" {
+			t.Errorf("expected command /usr/local/bin/start-webapp, got %q", job.Command)
+		}
+	})
+}
+
+func TestParse_SystemTabSeparated(t *testing.T) {
+	_, jobs, issues := Parse(testutil.FixtureSystemTabSeparated, testSystemSource)
+
+	if len(issues) != 0 {
+		t.Fatalf("expected 0 issues, got %d: %v", len(issues), issues)
+	}
+	if len(jobs) != 3 {
+		t.Fatalf("expected 3 jobs, got %d", len(jobs))
+	}
+
+	t.Run("tab-separated system fields", func(t *testing.T) {
+		job := jobs[0]
+		if job.Schedule.Expression != "0 3 * * *" {
+			t.Errorf("expected expression '0 3 * * *', got %q", job.Schedule.Expression)
+		}
+		if job.RunAsUser != "root" {
+			t.Errorf("expected RunAsUser root, got %q", job.RunAsUser)
+		}
+		if job.Command != "/usr/local/bin/backup" {
+			t.Errorf("expected command /usr/local/bin/backup, got %q", job.Command)
+		}
+	})
+
+	t.Run("CRON_TZ with system format", func(t *testing.T) {
+		job := jobs[1]
+		if job.Schedule.Timezone != "UTC" {
+			t.Errorf("expected timezone UTC, got %q", job.Schedule.Timezone)
+		}
+		if job.RunAsUser != "root" {
+			t.Errorf("expected RunAsUser root, got %q", job.RunAsUser)
+		}
+		if job.Command != "/usr/local/bin/tz-daily" {
+			t.Errorf("expected command /usr/local/bin/tz-daily, got %q", job.Command)
+		}
+	})
+
+	t.Run("TZ with system format and non-root user", func(t *testing.T) {
+		job := jobs[2]
+		if job.Schedule.Timezone != "Europe/Berlin" {
+			t.Errorf("expected timezone Europe/Berlin, got %q", job.Schedule.Timezone)
+		}
+		if job.RunAsUser != "backup" {
+			t.Errorf("expected RunAsUser backup, got %q", job.RunAsUser)
+		}
+		if job.Command != "/usr/local/bin/tz-standard" {
+			t.Errorf("expected command /usr/local/bin/tz-standard, got %q", job.Command)
+		}
+	})
+}
+
+func TestParse_SystemJobIDsUseSourceKey(t *testing.T) {
+	_, jobs, _ := Parse(testutil.FixtureSystemCrontab, testSystemSource)
+
+	for _, job := range jobs {
+		if job.ID == "" {
+			t.Error("job ID should not be empty")
+		}
+		// System source IDs should start with "sys:" prefix
+		if len(job.ID) < 4 || job.ID[:4] != "sys:" {
+			t.Errorf("system job ID should start with 'sys:', got %q", job.ID)
+		}
+	}
+}
+
+func TestParse_UserJobIDsPreserveFormat(t *testing.T) {
+	_, jobs, _ := Parse(testutil.FixtureValid, testSource)
+
+	prefix := "user_crontab:"
+	for _, job := range jobs {
+		if job.ID == "" {
+			t.Error("job ID should not be empty")
+		}
+		if len(job.ID) < len(prefix) || job.ID[:len(prefix)] != prefix {
+			t.Errorf("user job ID should start with %q, got %q", prefix, job.ID)
+		}
+	}
+}
+
+func TestBuildPeriodicJob(t *testing.T) {
+	src := domain.CronSource{
+		Kind:    domain.SourceKindSystem,
+		Subkind: domain.SubkindPeriodicDir,
+		Path:    "/etc/cron.daily/logrotate",
+		Label:   "daily/logrotate",
+	}
+
+	job := BuildPeriodicJob(src, "logrotate", domain.PeriodicDaily)
+
+	if job.Schedule.Kind != domain.ScheduleKindPeriodic {
+		t.Errorf("expected periodic kind, got %s", job.Schedule.Kind)
+	}
+	if job.Schedule.Expression != "daily" {
+		t.Errorf("expected expression 'daily', got %q", job.Schedule.Expression)
+	}
+	if job.RunAsUser != "root" {
+		t.Errorf("expected RunAsUser root, got %q", job.RunAsUser)
+	}
+	if !job.ReadOnly {
+		t.Error("expected ReadOnly=true for periodic job")
+	}
+	if !job.Enabled {
+		t.Error("expected Enabled=true for periodic job")
+	}
+	if job.ID == "" {
+		t.Error("expected non-empty ID")
+	}
 }

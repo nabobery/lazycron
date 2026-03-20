@@ -12,10 +12,11 @@ import (
 )
 
 type Model struct {
-	applySvc    *app.ApplyService
-	scheduleSvc *schedule.Service
-	runner      *runner.Runner
-	cancelRun   context.CancelFunc
+	applySvc     *app.ApplyService
+	inventorySvc *app.InventoryService
+	scheduleSvc  *schedule.Service
+	runner       *runner.Runner
+	cancelRun    context.CancelFunc
 
 	width  int
 	height int
@@ -49,11 +50,30 @@ func NewModel(applySvc *app.ApplyService, scheduleSvc *schedule.Service, r *runn
 	}
 }
 
+// SetInventoryService enables multi-source loading (user + system cron).
+func (m *Model) SetInventoryService(invSvc *app.InventoryService) {
+	m.inventorySvc = invSvc
+}
+
 func (m Model) Init() tea.Cmd {
 	return m.loadCmd()
 }
 
 func (m Model) loadCmd() tea.Cmd {
+	if m.inventorySvc != nil {
+		invSvc := m.inventorySvc
+		return func() tea.Msg {
+			inv, err := invSvc.LoadAll(context.Background())
+			if err != nil {
+				return loadResultMsg{err: err}
+			}
+			return loadResultMsg{
+				jobs:   inv.Jobs,
+				issues: inv.Issues,
+			}
+		}
+	}
+
 	svc := m.applySvc
 	return func() tea.Msg {
 		err := svc.Load(context.Background())
@@ -90,7 +110,10 @@ func matchesFilter(job domain.CronJob, filter string) bool {
 	lower := toLower(filter)
 	return containsLower(job.Command, lower) ||
 		containsLower(job.Schedule.Expression, lower) ||
-		containsLower(job.ID, lower)
+		containsLower(job.ID, lower) ||
+		containsLower(job.Source.Label, lower) ||
+		containsLower(job.Source.Path, lower) ||
+		containsLower(job.RunAsUser, lower)
 }
 
 func (m *Model) selectedJob() *domain.CronJob {

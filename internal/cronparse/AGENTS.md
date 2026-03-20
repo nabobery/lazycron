@@ -18,8 +18,15 @@ Document-preserving cron parser with two-layer architecture.
 
 ```go
 Parse(text string, source CronSource) (CronDocument, []CronJob, []ValidationIssue)
-Render(doc CronDocument) string  // Round-trip reconstruction
+Render(doc CronDocument) string            // Round-trip reconstruction
+BuildPeriodicJob(source CronSource, name string, interval PeriodicInterval) CronJob
 ```
+
+## SYSTEM FORMAT SUPPORT
+
+`extractScheduleAndCommand()` accepts `systemFormat bool` parameter:
+- `false` (user crontab): 5-field format
+- `true` (system cron): 6-field format with `runAsUser` in field 6
 
 ## LINE CLASSIFICATION
 

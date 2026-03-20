@@ -7,6 +7,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/avinashchangrani/lazycron/internal/domain"
 )
@@ -160,8 +161,14 @@ func (m Model) renderJobsPane(width, height int) string {
 			badge = disabledBadge.String()
 		}
 
-		cmdDisplay := truncate(job.Command, width-4)
-		line := fmt.Sprintf("%s %s", badge, cmdDisplay)
+		prefix := badge
+		if job.ReadOnly {
+			prefix = badge + " " + readOnlyBadge.String()
+		}
+
+		prefixWidth := ansi.StringWidth(prefix + " ")
+		cmdDisplay := truncate(job.Command, width-prefixWidth)
+		line := fmt.Sprintf("%s %s", prefix, cmdDisplay)
 
 		if i == m.selected {
 			line = selectedStyle.Width(width).Render(line)
@@ -193,8 +200,8 @@ func (m Model) renderDetailsPane(width, height int) string {
 
 	// Schedule description
 	desc := m.scheduleSvc.Describe(job.Schedule)
-	lines = append(lines, fmt.Sprintf("Schedule: %s", desc))
-	lines = append(lines, fmt.Sprintf("Expression: %s", dimStyle.Render(job.Schedule.Expression)))
+	lines = append(lines, truncate(fmt.Sprintf("Schedule: %s", desc), width))
+	lines = append(lines, truncate(fmt.Sprintf("Expression: %s", dimStyle.Render(job.Schedule.Expression)), width))
 
 	// Next runs
 	nextRuns, err := m.scheduleSvc.NextRuns(job.Schedule, time.Now(), 3)
@@ -207,12 +214,27 @@ func (m Model) renderDetailsPane(width, height int) string {
 	} else if job.Schedule.Kind == domain.ScheduleKindReboot {
 		lines = append(lines, "")
 		lines = append(lines, dimStyle.Render("(event-based, no scheduled runs)"))
+	} else if job.Schedule.Kind == domain.ScheduleKindPeriodic {
+		lines = append(lines, "")
+		lines = append(lines, dimStyle.Render("(periodic directory; schedule is non-deterministic)"))
 	}
 
 	// Source info
 	lines = append(lines, "")
-	lines = append(lines, fmt.Sprintf("Command: %s", truncate(job.Command, width-10)))
-	lines = append(lines, fmt.Sprintf("Source: %s", dimStyle.Render(job.Source.Path)))
+	lines = append(lines, truncate(fmt.Sprintf("Command: %s", job.Command), width))
+	lines = append(lines, truncate(fmt.Sprintf("Source: %s", dimStyle.Render(job.Source.Path)), width))
+
+	if job.Source.Label != "" && job.Source.Label != job.Source.Path {
+		lines = append(lines, truncate(fmt.Sprintf("Label: %s", dimStyle.Render(job.Source.Label)), width))
+	}
+
+	if job.Source.Owner != "" {
+		lines = append(lines, truncate(fmt.Sprintf("Owner: %s", dimStyle.Render(job.Source.Owner)), width))
+	}
+
+	if job.RunAsUser != "" {
+		lines = append(lines, truncate(fmt.Sprintf("Run as: %s", dimStyle.Render(job.RunAsUser)), width))
+	}
 
 	status := successStyle.Render("enabled")
 	if !job.Enabled {
@@ -220,8 +242,22 @@ func (m Model) renderDetailsPane(width, height int) string {
 	}
 	lines = append(lines, fmt.Sprintf("Status: %s", status))
 
+	if job.ReadOnly {
+		lines = append(lines, fmt.Sprintf("Editable: %s", readOnlyLabelStyle.Render("no (system source, read-only)")))
+	}
+
 	if job.Schedule.Timezone != "" {
-		lines = append(lines, fmt.Sprintf("Timezone: %s", job.Schedule.Timezone))
+		lines = append(lines, truncate(fmt.Sprintf("Timezone: %s", job.Schedule.Timezone), width))
+	}
+
+	if job.Source.Kind == domain.SourceKindSystem {
+		access := job.Source.Access
+		if access.Readable {
+			lines = append(lines, fmt.Sprintf("Access: %s", dimStyle.Render("readable")))
+		}
+		if access.Reason != "" {
+			lines = append(lines, truncate(fmt.Sprintf("Note: %s", dimStyle.Render(access.Reason)), width))
+		}
 	}
 
 	// Env context

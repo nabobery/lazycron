@@ -7,12 +7,14 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os/user"
 	"strings"
 	"time"
 
 	"github.com/avinashchangrani/lazycron/internal/app"
 	"github.com/avinashchangrani/lazycron/internal/domain"
 	"github.com/avinashchangrani/lazycron/internal/platform/crontab"
+	"github.com/avinashchangrani/lazycron/internal/platform/systemcron"
 	"github.com/avinashchangrani/lazycron/internal/runner"
 	"github.com/avinashchangrani/lazycron/internal/schedule"
 )
@@ -56,6 +58,7 @@ type Deps struct {
 	Source      domain.CronSource
 	Runner      *runner.Runner
 	ScheduleSvc *schedule.Service
+	Discoverer  *systemcron.Discoverer
 }
 
 func DefaultDeps() Deps {
@@ -67,6 +70,7 @@ func DefaultDeps() Deps {
 		},
 		Runner:      runner.New(runner.DefaultConfig()),
 		ScheduleSvc: schedule.NewService(),
+		Discoverer:  systemcron.New(),
 	}
 }
 
@@ -97,10 +101,28 @@ func Run(args []string, stdout, stderr io.Writer, deps Deps) int {
 	}
 }
 
+func loadJobs(ctx context.Context, deps Deps, includeSystem bool) ([]domain.CronJob, []domain.ValidationIssue, error) {
+	applySvc := app.NewApplyService(deps.Client, deps.Source)
+	if !includeSystem || deps.Discoverer == nil {
+		if err := applySvc.Load(ctx); err != nil {
+			return nil, nil, err
+		}
+		return applySvc.Jobs(), applySvc.Issues(), nil
+	}
+
+	invSvc := app.NewInventoryService(applySvc, deps.Discoverer)
+	inv, err := invSvc.LoadAll(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	return inv.Jobs, inv.Issues, nil
+}
+
 func runList(args []string, stdout, stderr io.Writer, deps Deps) int {
 	fs := flag.NewFlagSet("list", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	jsonFlag := fs.Bool("json", false, "output as JSON")
+	allFlag := fs.Bool("all", false, "include system cron sources")
 	ok, help := parseFlags(fs, args)
 	if !ok {
 		if help {
@@ -109,15 +131,14 @@ func runList(args []string, stdout, stderr io.Writer, deps Deps) int {
 		return 1
 	}
 
-	svc := app.NewApplyService(deps.Client, deps.Source)
-	if err := svc.Load(context.Background()); err != nil {
+	jobs, _, err := loadJobs(context.Background(), deps, *allFlag)
+	if err != nil {
 		if writeErr := writef(stderr, "error: %v\n", err); writeErr != nil {
 			return 1
 		}
 		return 1
 	}
 
-	jobs := svc.Jobs()
 	if *jsonFlag {
 		safe := sanitizeJobsForJSON(jobs)
 		enc := json.NewEncoder(stdout)
@@ -147,11 +168,24 @@ func runList(args []string, stdout, stderr io.Writer, deps Deps) int {
 			status = "disabled"
 		}
 		desc := deps.ScheduleSvc.Describe(job.Schedule)
-		if err := writef(stdout, "%s\t%s\t%s\t%s\n", job.ID, status, desc, job.Command); err != nil {
-			if writeErr := writef(stderr, "error: %v\n", err); writeErr != nil {
+		source := ""
+		if job.Source.Label != "" {
+			source = job.Source.Label
+		}
+		if source != "" {
+			if err := writef(stdout, "%s\t%s\t%s\t%s\t%s\n", job.ID, status, desc, job.Command, source); err != nil {
+				if writeErr := writef(stderr, "error: %v\n", err); writeErr != nil {
+					return 1
+				}
 				return 1
 			}
-			return 1
+		} else {
+			if err := writef(stdout, "%s\t%s\t%s\t%s\n", job.ID, status, desc, job.Command); err != nil {
+				if writeErr := writef(stderr, "error: %v\n", err); writeErr != nil {
+					return 1
+				}
+				return 1
+			}
 		}
 	}
 	return 0
@@ -160,6 +194,7 @@ func runList(args []string, stdout, stderr io.Writer, deps Deps) int {
 func runValidate(args []string, stdout, stderr io.Writer, deps Deps) int {
 	fs := flag.NewFlagSet("validate", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	allFlag := fs.Bool("all", false, "include system cron sources")
 	ok, help := parseFlags(fs, args)
 	if !ok {
 		if help {
@@ -168,15 +203,14 @@ func runValidate(args []string, stdout, stderr io.Writer, deps Deps) int {
 		return 1
 	}
 
-	svc := app.NewApplyService(deps.Client, deps.Source)
-	if err := svc.Load(context.Background()); err != nil {
+	_, issues, err := loadJobs(context.Background(), deps, *allFlag)
+	if err != nil {
 		if writeErr := writef(stderr, "error: %v\n", err); writeErr != nil {
 			return 1
 		}
 		return 1
 	}
 
-	issues := svc.Issues()
 	if len(issues) == 0 {
 		if err := writeln(stdout, "No issues found."); err != nil {
 			if writeErr := writef(stderr, "error: %v\n", err); writeErr != nil {
@@ -188,7 +222,13 @@ func runValidate(args []string, stdout, stderr io.Writer, deps Deps) int {
 	}
 
 	for _, issue := range issues {
-		if err := writef(stdout, "line %d: [%s] %s\n", issue.LineIndex+1, issue.Severity, issue.Message); err != nil {
+		var line string
+		if issue.LineIndex < 0 {
+			line = fmt.Sprintf("[%s] %s\n", issue.Severity, issue.Message)
+		} else {
+			line = fmt.Sprintf("line %d: [%s] %s\n", issue.LineIndex+1, issue.Severity, issue.Message)
+		}
+		if err := writeString(stdout, line); err != nil {
 			if writeErr := writef(stderr, "error: %v\n", err); writeErr != nil {
 				return 1
 			}
@@ -202,6 +242,7 @@ func runRun(args []string, stdout, stderr io.Writer, deps Deps) int {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	envMode := fs.String("env", "cron_like", "environment mode: cron_like or shell_inherit")
+	allFlag := fs.Bool("all", false, "search system sources for the job ID")
 	ok, help := parseFlags(fs, args)
 	if !ok {
 		if help {
@@ -223,8 +264,8 @@ func runRun(args []string, stdout, stderr io.Writer, deps Deps) int {
 		mode = domain.EnvModeShellInherit
 	}
 
-	svc := app.NewApplyService(deps.Client, deps.Source)
-	if err := svc.Load(context.Background()); err != nil {
+	jobs, _, err := loadJobs(context.Background(), deps, *allFlag)
+	if err != nil {
 		if writeErr := writef(stderr, "error: %v\n", err); writeErr != nil {
 			return 1
 		}
@@ -232,9 +273,9 @@ func runRun(args []string, stdout, stderr io.Writer, deps Deps) int {
 	}
 
 	var target *domain.CronJob
-	for _, job := range svc.Jobs() {
-		if job.ID == jobID {
-			target = &job
+	for i := range jobs {
+		if jobs[i].ID == jobID {
+			target = &jobs[i]
 			break
 		}
 	}
@@ -243,6 +284,12 @@ func runRun(args []string, stdout, stderr io.Writer, deps Deps) int {
 			return 1
 		}
 		return 1
+	}
+
+	if target.RunAsUser != "" {
+		if u, uErr := user.Current(); uErr == nil && u.Username != target.RunAsUser {
+			_ = writef(stderr, "Note: job runs as %s in cron; running now as %s\n", target.RunAsUser, u.Username)
+		}
 	}
 
 	rec, err := deps.Runner.Run(context.Background(), *target, mode)
@@ -341,6 +388,54 @@ func runDoctor(args []string, stdout, stderr io.Writer, deps Deps) int {
 		return 1
 	}
 
+	// System cron source diagnostics (always included in doctor)
+	if err := writeln(stdout, ""); err != nil {
+		return 1
+	}
+	if err := writeln(stdout, "System cron sources:"); err != nil {
+		return 1
+	}
+
+	if deps.Discoverer == nil {
+		if err := writeln(stdout, "  (discoverer not available)"); err != nil {
+			return 1
+		}
+		return 0
+	}
+
+	sysSources, periodicEntries, sysIssues := deps.Discoverer.DiscoverAll()
+
+	if len(sysSources) == 0 && len(periodicEntries) == 0 {
+		if err := writeln(stdout, "  No system cron sources found (or not readable)"); err != nil {
+			return 1
+		}
+	}
+
+	for _, ds := range sysSources {
+		status := "readable"
+		if !ds.Source.Access.Readable {
+			status = "NOT readable"
+			if ds.Source.Access.Reason != "" {
+				status += " (" + ds.Source.Access.Reason + ")"
+			}
+		}
+		if err := writef(stdout, "  %-30s %s\n", ds.Source.Path, status); err != nil {
+			return 1
+		}
+	}
+
+	if len(periodicEntries) > 0 {
+		if err := writef(stdout, "  periodic entries:  %d\n", len(periodicEntries)); err != nil {
+			return 1
+		}
+	}
+
+	if len(sysIssues) > 0 {
+		if err := writef(stdout, "  system issues:     %d\n", len(sysIssues)); err != nil {
+			return 1
+		}
+	}
+
 	return 0
 }
 
@@ -352,17 +447,32 @@ type jsonJob struct {
 		Expression string `json:"expression"`
 		Timezone   string `json:"timezone,omitempty"`
 	} `json:"schedule"`
-	Command string   `json:"command"`
-	EnvKeys []string `json:"env_keys,omitempty"`
+	Command   string      `json:"command"`
+	EnvKeys   []string    `json:"env_keys,omitempty"`
+	Source    *jsonSource `json:"source,omitempty"`
+	RunAsUser string      `json:"run_as_user,omitempty"`
+	ReadOnly  bool        `json:"read_only"`
+	Mutable   bool        `json:"mutable"`
+}
+
+type jsonSource struct {
+	Kind    string `json:"kind"`
+	Subkind string `json:"subkind,omitempty"`
+	Path    string `json:"path"`
+	Label   string `json:"label,omitempty"`
+	Owner   string `json:"owner,omitempty"`
 }
 
 func sanitizeJobsForJSON(jobs []domain.CronJob) []jsonJob {
 	out := make([]jsonJob, len(jobs))
 	for i, j := range jobs {
 		out[i] = jsonJob{
-			ID:      j.ID,
-			Enabled: j.Enabled,
-			Command: j.Command,
+			ID:        j.ID,
+			Enabled:   j.Enabled,
+			Command:   j.Command,
+			RunAsUser: j.RunAsUser,
+			ReadOnly:  j.ReadOnly,
+			Mutable:   app.IsJobMutable(j),
 		}
 		out[i].Schedule.Kind = string(j.Schedule.Kind)
 		out[i].Schedule.Expression = j.Schedule.Expression
@@ -373,6 +483,13 @@ func sanitizeJobsForJSON(jobs []domain.CronJob) []jsonJob {
 				keys[k] = ea.Key
 			}
 			out[i].EnvKeys = keys
+		}
+		out[i].Source = &jsonSource{
+			Kind:    string(j.Source.Kind),
+			Subkind: string(j.Source.Subkind),
+			Path:    j.Source.Path,
+			Label:   j.Source.Label,
+			Owner:   j.Source.Owner,
 		}
 	}
 	return out

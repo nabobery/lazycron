@@ -19,6 +19,7 @@ lazycron/
 │   ├── cronparse/      # Document-preserving cron parser (Parse, Render)
 │   ├── domain/         # Core types (CronJob, CronDocument, ScheduleSpec, JobDraft, etc.)
 │   ├── platform/crontab/  # crontab Client interface + system adapter
+│   ├── platform/systemcron/ # System cron discovery (/etc/crontab, /etc/cron.d, periodic)
 │   ├── runner/         # Subprocess execution with bounded output
 │   ├── schedule/       # Next-run calculation + human descriptions
 │   ├── testutil/       # Shared test helpers
@@ -43,6 +44,9 @@ lazycron/
 | Job execution | `internal/runner/runner.go` | Bounded buffer, process group for cancellation |
 | CLI subcommands | `internal/cli/cli.go` | list, validate, run, doctor via flag.NewFlagSet |
 | TUI editor | `internal/tui/editor.go` | Modal create/edit form with preview |
+| Unified inventory | `internal/app/inventory.go` | Merges user + system cron sources |
+| System discovery | `internal/platform/systemcron/` | Discoverer reads /etc/crontab, cron.d, periodic dirs |
+| Test fixtures | `internal/testutil/fixtures.go` | Shared test data |
 
 ## CONVENTIONS
 
@@ -50,6 +54,9 @@ lazycron/
 - **Disabled marker**: `# [lazycron-disabled] ` prefix, reversible round-trip
 - **Drift detection**: Compare baseline before apply, refuse silent overwrite
 - **Interface-first platform**: `crontab.Client` interface enables fake for testing
+- **FS abstraction**: `systemcron.FS` interface for testable file operations
+- **Read-only awareness**: System jobs have `ReadOnly=true`, use `IsJobMutable()`
+- **Source attribution**: `CronSource` has Subkind, Label, Owner, Access fields
 - **MVU for TUI**: `Model` struct, `Update` handles `tea.Msg`, `View` renders
 
 ## ANTI-PATTERNS (THIS PROJECT)
@@ -58,6 +65,7 @@ lazycron/
 - Never flatten document to jobs-only—preserve comments/env/blank lines for round-trip
 - Never execute jobs automatically—manual run requires explicit user action
 - Never bypass `crontab.Client` interface for direct system calls
+- Never mutate system jobs—check `ReadOnly` before allowing toggle/delete/edit
 
 ## COMMANDS
 

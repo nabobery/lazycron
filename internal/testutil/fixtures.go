@@ -59,3 +59,26 @@ const FixtureEveryDescriptor = `@every 5m /usr/local/bin/poll-queue
 const FixtureTabSeparated = "CRON_TZ=UTC\t@daily\t/usr/local/bin/tz-daily\n" +
 	"TZ=Europe/Berlin\t0 3 * * *\t/usr/local/bin/tz-standard\n" +
 	"0\t3\t*\t*\t*\t/usr/local/bin/tab-fields\n"
+
+// System cron format fixtures (6-field with user column)
+
+const FixtureSystemCrontab = `SHELL=/bin/sh
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+
+# /etc/crontab: system-wide crontab
+17 * * * * root cd / && run-parts --report /etc/cron.hourly
+25 6 * * * root test -x /usr/sbin/anacron || ( cd / && run-parts --report /etc/cron.daily )
+47 6 * * 0 root test -x /usr/sbin/anacron || ( cd / && run-parts --report /etc/cron.weekly )
+52 6 1 * * root test -x /usr/sbin/anacron || ( cd / && run-parts --report /etc/cron.monthly )
+`
+
+const FixtureSystemCronD = `# Backup job
+0 2 * * * root /usr/local/bin/backup --full
+*/5 * * * * monitor /usr/local/bin/check-health
+@daily root /usr/local/bin/cleanup-old-logs
+@reboot www-data /usr/local/bin/start-webapp
+`
+
+const FixtureSystemTabSeparated = "0\t3\t*\t*\t*\troot\t/usr/local/bin/backup\n" +
+	"CRON_TZ=UTC\t@daily\troot\t/usr/local/bin/tz-daily\n" +
+	"TZ=Europe/Berlin\t0 3 * * *\tbackup\t/usr/local/bin/tz-standard\n"

@@ -1,8 +1,9 @@
 package tui
 
 import (
-	"regexp"
 	"strings"
+
+	"github.com/charmbracelet/x/ansi"
 )
 
 func toLower(s string) string {
@@ -13,17 +14,16 @@ func containsLower(haystack, needle string) bool {
 	return strings.Contains(strings.ToLower(haystack), needle)
 }
 
+// truncate truncates s to maxLen visible cells, accounting for ANSI escape
+// sequences and wide (East Asian) characters. Appends "…" when truncated.
 func truncate(s string, maxLen int) string {
 	if maxLen <= 0 {
 		return ""
 	}
-	if len(s) <= maxLen {
+	if ansi.StringWidth(s) <= maxLen {
 		return s
 	}
-	if maxLen <= 1 {
-		return s[:maxLen]
-	}
-	return s[:maxLen-1] + "…"
+	return ansi.Truncate(s, maxLen, "…")
 }
 
 func clamp(val, lo, hi int) int {
@@ -36,12 +36,10 @@ func clamp(val, lo, hi int) int {
 	return val
 }
 
-var ansiEscapeRe = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
-
 // stripControlCodes removes ANSI escape sequences and non-printable control
 // characters (except \n and \t) to prevent log output from corrupting the TUI.
 func stripControlCodes(s string) string {
-	s = ansiEscapeRe.ReplaceAllString(s, "")
+	s = ansi.Strip(s)
 	var b strings.Builder
 	b.Grow(len(s))
 	for _, r := range s {

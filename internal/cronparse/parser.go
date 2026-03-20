@@ -58,6 +58,10 @@ func splitLines(text string) []string {
 	return lines
 }
 
+func isSystemSource(source domain.CronSource) bool {
+	return source.Subkind == domain.SubkindSystemCrontab || source.Subkind == domain.SubkindCronD
+}
+
 func classifyLine(index int, raw string, source domain.CronSource, envContext []domain.EnvAssignment) domain.CronLine {
 	trimmed := strings.TrimSpace(raw)
 
@@ -111,7 +115,8 @@ func parseJobLine(index int, raw, trimmed string, source domain.CronSource, envC
 		Enabled: enabled,
 	}
 
-	expr, command, tz, err := extractScheduleAndCommand(trimmed)
+	sysFormat := isSystemSource(source)
+	expr, command, tz, runAsUser, err := extractScheduleAndCommand(trimmed, sysFormat)
 	if err != nil {
 		line.Kind = domain.LineKindInvalid
 		line.Issue = &domain.ValidationIssue{
@@ -131,6 +136,7 @@ func parseJobLine(index int, raw, trimmed string, source domain.CronSource, envC
 			Expression: expr,
 			Timezone:   tz,
 		}, command)
+		job.RunAsUser = runAsUser
 		line.Job = &job
 		return line
 	}
@@ -153,6 +159,7 @@ func parseJobLine(index int, raw, trimmed string, source domain.CronSource, envC
 		Expression: expr,
 		Timezone:   tz,
 	}, command)
+	job.RunAsUser = runAsUser
 	line.Job = &job
 	return line
 }
@@ -162,7 +169,7 @@ func buildJob(index int, raw string, source domain.CronSource, envContext []doma
 	copy(envCopy, envContext)
 
 	return domain.CronJob{
-		ID:          fmt.Sprintf("%s:%s:line-%d", source.Kind, source.User, index),
+		ID:          fmt.Sprintf("%s:line-%d", domain.SourceKey(source), index),
 		LineIndex:   index,
 		Source:      source,
 		Enabled:     enabled,
@@ -171,6 +178,7 @@ func buildJob(index int, raw string, source domain.CronSource, envContext []doma
 		Command:     command,
 		EnvContext:  envCopy,
 		Fingerprint: domain.ComputeFingerprint(spec.Expression, command),
+		ReadOnly:    source.Kind == domain.SourceKindSystem,
 	}
 }
 
@@ -183,12 +191,12 @@ func indexAnyWhitespace(s string) int {
 	return -1
 }
 
-func extractScheduleAndCommand(trimmed string) (expr, command, tz string, err error) {
+func extractScheduleAndCommand(trimmed string, systemFormat bool) (expr, command, tz, runAsUser string, err error) {
 	// Handle CRON_TZ= or TZ= prefix
 	if strings.HasPrefix(trimmed, "CRON_TZ=") || strings.HasPrefix(trimmed, "TZ=") {
 		wsIdx := indexAnyWhitespace(trimmed)
 		if wsIdx == -1 {
-			return "", "", "", fmt.Errorf("malformed timezone prefix: %q", trimmed)
+			return "", "", "", "", fmt.Errorf("malformed timezone prefix: %q", trimmed)
 		}
 		prefix := trimmed[:wsIdx]
 		trimmed = strings.TrimSpace(trimmed[wsIdx+1:])
@@ -200,40 +208,70 @@ func extractScheduleAndCommand(trimmed string) (expr, command, tz string, err er
 	// Handle @reboot, @daily, @hourly, @every, etc.
 	if strings.HasPrefix(trimmed, "@") {
 		fields := strings.Fields(trimmed)
-		if len(fields) < 2 {
-			return "", "", "", fmt.Errorf("descriptor %q has no command", trimmed)
-		}
 
-		// @every requires two tokens for the expression: "@every <duration>"
 		if strings.EqualFold(fields[0], "@every") {
+			// @every <duration> [user] command...
+			if systemFormat {
+				if len(fields) < 4 {
+					return "", "", "", "", fmt.Errorf("descriptor %q has no command (system format)", trimmed)
+				}
+				expr = fields[0] + " " + fields[1]
+				runAsUser = fields[2]
+				cmd := strings.TrimSpace(trimmed[findCommandStart(trimmed, 3):])
+				return expr, cmd, tz, runAsUser, nil
+			}
 			if len(fields) < 3 {
-				return "", "", "", fmt.Errorf("descriptor %q has no command", trimmed)
+				return "", "", "", "", fmt.Errorf("descriptor %q has no command", trimmed)
 			}
 			expr = fields[0] + " " + fields[1]
-			cmd := strings.TrimSpace(trimmed[findCommandStartAfterFields(trimmed, 2):])
-			return expr, cmd, tz, nil
+			cmd := strings.TrimSpace(trimmed[findCommandStart(trimmed, 2):])
+			return expr, cmd, tz, "", nil
 		}
 
-		cmd := strings.TrimSpace(trimmed[findCommandStartAfterFields(trimmed, 1):])
-		if cmd == "" {
-			return "", "", "", fmt.Errorf("descriptor %q has no command", trimmed)
+		// @reboot, @daily, etc: descriptor [user] command...
+		if systemFormat {
+			if len(fields) < 3 {
+				return "", "", "", "", fmt.Errorf("descriptor %q has no command (system format)", trimmed)
+			}
+			runAsUser = fields[1]
+			cmd := strings.TrimSpace(trimmed[findCommandStart(trimmed, 2):])
+			if cmd == "" {
+				return "", "", "", "", fmt.Errorf("descriptor %q has no command (system format)", trimmed)
+			}
+			return fields[0], cmd, tz, runAsUser, nil
 		}
-		return fields[0], cmd, tz, nil
+
+		if len(fields) < 2 {
+			return "", "", "", "", fmt.Errorf("descriptor %q has no command", trimmed)
+		}
+		cmd := strings.TrimSpace(trimmed[findCommandStart(trimmed, 1):])
+		if cmd == "" {
+			return "", "", "", "", fmt.Errorf("descriptor %q has no command", trimmed)
+		}
+		return fields[0], cmd, tz, "", nil
+	}
+
+	if systemFormat {
+		// System 6-field: min hour dom month dow user command...
+		fields := strings.Fields(trimmed)
+		if len(fields) < 7 {
+			return "", "", "", "", fmt.Errorf("too few fields (%d) for system cron line (need 7: 5 schedule + user + command)", len(fields))
+		}
+		expr = strings.Join(fields[:5], " ")
+		runAsUser = fields[5]
+		command = strings.TrimSpace(trimmed[findCommandStart(trimmed, 6):])
+		return expr, command, tz, runAsUser, nil
 	}
 
 	// Standard 5-field: min hour dom month dow command...
 	fields := strings.Fields(trimmed)
 	if len(fields) < 6 {
-		return "", "", "", fmt.Errorf("too few fields (%d) for standard cron line", len(fields))
+		return "", "", "", "", fmt.Errorf("too few fields (%d) for standard cron line", len(fields))
 	}
 
 	expr = strings.Join(fields[:5], " ")
 	command = strings.TrimSpace(trimmed[findCommandStart(trimmed, 5):])
-	return expr, command, tz, nil
-}
-
-func findCommandStartAfterFields(line string, skipFields int) int {
-	return findCommandStart(line, skipFields)
+	return expr, command, tz, "", nil
 }
 
 func findCommandStart(line string, skipFields int) int {
@@ -318,6 +356,25 @@ func isAlpha(ch rune) bool {
 
 func isDigit(ch rune) bool {
 	return ch >= '0' && ch <= '9'
+}
+
+// BuildPeriodicJob creates a synthetic CronJob for a periodic directory entry.
+func BuildPeriodicJob(source domain.CronSource, name string, interval domain.PeriodicInterval) domain.CronJob {
+	expr := string(interval)
+	return domain.CronJob{
+		ID:      fmt.Sprintf("%s:%s", domain.SourceKey(source), name),
+		Source:  source,
+		Enabled: true,
+		RawLine: name,
+		Schedule: domain.ScheduleSpec{
+			Kind:       domain.ScheduleKindPeriodic,
+			Expression: expr,
+		},
+		Command:     source.Path,
+		Fingerprint: domain.ComputeFingerprint(expr, source.Path),
+		RunAsUser:   "root",
+		ReadOnly:    true,
+	}
 }
 
 // Render reconstructs the document text from its lines.

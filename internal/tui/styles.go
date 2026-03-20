@@ -63,4 +63,12 @@ var (
 	searchStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("11")).
 			Bold(true)
+
+	readOnlyBadge = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("243")).
+			SetString("[RO]")
+
+	readOnlyLabelStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("243")).
+				Italic(true)
 )

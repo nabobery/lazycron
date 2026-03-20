@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
@@ -363,6 +364,31 @@ func TestStripControlCodes(t *testing.T) {
 			got := stripControlCodes(tt.input)
 			if got != tt.want {
 				t.Errorf("stripControlCodes(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestTruncate(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  string
+		maxLen int
+		want   string
+	}{
+		{"short string", "hello", 10, "hello"},
+		{"exact length", "hello", 5, "hello"},
+		{"needs truncation", "hello world", 8, "hello w…"},
+		{"zero length", "hello", 0, ""},
+		{"empty string", "", 10, ""},
+		{"ANSI preserved", "\x1b[31mred\x1b[0m", 10, "\x1b[31mred\x1b[0m"},
+		{"ANSI truncated", "\x1b[31mhello world\x1b[0m", 8, "\x1b[31mhello w…\x1b[0m"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := truncate(tt.input, tt.maxLen)
+			if got != tt.want {
+				t.Errorf("truncate(%q, %d) = %q, want %q", tt.input, tt.maxLen, got, tt.want)
 			}
 		})
 	}
@@ -741,6 +767,130 @@ func TestModel_EditorCleanEscDoesNotPrompt(t *testing.T) {
 	}
 }
 
+func TestModel_ReadOnlyJobBlocksToggle(t *testing.T) {
+	m := newTestModel("0 3 * * * /usr/local/bin/backup-db\n")
+	m = loadModel(m)
+
+	// Mark the first job as read-only (simulating system source)
+	m.jobs[0].ReadOnly = true
+
+	updated, cmd := m.Update(press(' ', "space", 0))
+	m = updated.(Model)
+
+	if cmd != nil {
+		t.Fatal("space on read-only job should not trigger a command")
+	}
+	if m.state != stateReady {
+		t.Fatalf("state should remain stateReady, got %d", m.state)
+	}
+	if m.bannerMsg == nil {
+		t.Fatal("expected a banner message about read-only")
+	}
+	if m.bannerMsg.isError {
+		t.Fatal("read-only banner should not be an error banner")
+	}
+}
+
+func TestModel_ReadOnlyJobBlocksDelete(t *testing.T) {
+	m := newTestModel("0 3 * * * /usr/local/bin/backup-db\n")
+	m = loadModel(m)
+
+	m.jobs[0].ReadOnly = true
+
+	updated, _ := m.Update(press('d', "d", 0))
+	m = updated.(Model)
+
+	if m.state == stateConfirmDelete {
+		t.Fatal("d on read-only job should not enter confirm delete state")
+	}
+	if m.state != stateReady {
+		t.Fatalf("state should remain stateReady, got %d", m.state)
+	}
+	if m.bannerMsg == nil {
+		t.Fatal("expected a banner message about read-only")
+	}
+}
+
+func TestModel_ReadOnlyJobBlocksEdit(t *testing.T) {
+	m := newTestModel("0 3 * * * /usr/local/bin/backup-db\n")
+	m = loadModel(m)
+
+	m.jobs[0].ReadOnly = true
+
+	updated, _ := m.Update(press('e', "e", 0))
+	m = updated.(Model)
+
+	if m.state == stateEditing {
+		t.Fatal("e on read-only job should not enter editing state")
+	}
+	if m.state != stateReady {
+		t.Fatalf("state should remain stateReady, got %d", m.state)
+	}
+	if m.editor != nil {
+		t.Fatal("editor should not be opened for read-only job")
+	}
+	if m.bannerMsg == nil {
+		t.Fatal("expected a banner message about read-only")
+	}
+}
+
+func TestModel_ReadOnlyJobAllowsRun(t *testing.T) {
+	m := newTestModel("0 3 * * * /bin/echo hello\n")
+	m = loadModel(m)
+
+	m.jobs[0].ReadOnly = true
+
+	updated, cmd := m.Update(press('x', "x", 0))
+	m = updated.(Model)
+
+	if m.state != stateRunning {
+		t.Fatalf("x on read-only job should still start a run, got state %d", m.state)
+	}
+	if cmd == nil {
+		t.Fatal("should have returned a command for the run")
+	}
+}
+
+func TestModel_FilterMatchesSourceLabel(t *testing.T) {
+	m := newTestModel("0 3 * * * /usr/local/bin/backup-db\n@daily /usr/local/bin/cleanup\n")
+	m = loadModel(m)
+
+	// Set source label on first job
+	m.jobs[0].Source.Label = "cron.d/backups"
+
+	// Enter filter mode
+	updated, _ := m.Update(press('/', "/", 0))
+	m = updated.(Model)
+
+	for _, ch := range "cron.d" {
+		updated, _ = m.Update(press(ch, string(ch), 0))
+		m = updated.(Model)
+	}
+
+	if len(m.filteredIdx) != 1 {
+		t.Fatalf("expected 1 filtered result matching source label, got %d", len(m.filteredIdx))
+	}
+}
+
+func TestModel_FilterMatchesRunAsUser(t *testing.T) {
+	m := newTestModel("0 3 * * * /usr/local/bin/backup-db\n@daily /usr/local/bin/cleanup\n")
+	m = loadModel(m)
+
+	m.jobs[0].RunAsUser = "www-data"
+
+	updated, _ := m.Update(press('/', "/", 0))
+	m = updated.(Model)
+
+	for _, ch := range "www-data" {
+		updated, _ = m.Update(press(ch, string(ch), 0))
+		m = updated.(Model)
+	}
+
+	if len(m.filteredIdx) != 1 {
+		t.Fatalf("expected 1 filtered result matching RunAsUser, got %d", len(m.filteredIdx))
+	}
+}
+
 func TestModel_EditorViewMultipleCalls(t *testing.T) {
 	m := newTestModel("0 3 * * * /usr/local/bin/backup-db\n")
 	m = loadModel(m)
@@ -760,5 +910,22 @@ func TestModel_EditorViewMultipleCalls(t *testing.T) {
 	preview := m.previewDraft()
 	if preview.Minute != "05" {
 		t.Fatalf("after multiple View() calls, minute should be '05', got %q", preview.Minute)
+	}
+}
+
+func TestModel_PeriodicJobShowsNonDeterministicNote(t *testing.T) {
+	m := newTestModel("0 3 * * * /usr/local/bin/backup-db\n")
+	m = loadModel(m)
+
+	m.jobs[0].Schedule.Kind = domain.ScheduleKindPeriodic
+	m.jobs[0].Schedule.Expression = "daily"
+
+	m.width = 120
+	m.height = 40
+
+	view := m.View()
+	content := view.Content
+	if !strings.Contains(content, "non-deterministic") {
+		t.Fatal("expected periodic job details to contain 'non-deterministic' note")
 	}
 }

@@ -42,6 +42,19 @@ type JobDraft struct {
 - Descriptor: must start with @, valid keywords
 - Command: must not be empty
 
+## SOURCE ATTRIBUTION
+
+```go
+type SourceSubkind string   // SubkindSystemCrontab, SubkindCronD, SubkindPeriodicDir
+type SourceAccess struct { Readable, Writable bool; Reason string }
+type PeriodicInterval string  // hourly, daily, weekly, monthly
+```
+
+`CronSource` now has: `Subkind`, `Label`, `Owner`, `Access`
+`CronJob` now has: `RunAsUser`, `ReadOnly`
+
+Use `SourceKey(source)` for stable job ID prefixes.
+
 ## ANTI-PATTERNS
 
 - Never skip validation before apply

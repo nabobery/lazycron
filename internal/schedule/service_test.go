@@ -181,3 +181,50 @@ func TestNextRuns_WithTimezone(t *testing.T) {
 		}
 	}
 }
+
+func TestNextRuns_Periodic(t *testing.T) {
+	svc := NewService()
+	spec := domain.ScheduleSpec{
+		Kind:       domain.ScheduleKindPeriodic,
+		Expression: "daily",
+	}
+
+	runs, err := svc.NextRuns(spec, fixedNow, 3)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(runs) != 0 {
+		t.Fatalf("expected 0 runs for periodic schedule, got %d", len(runs))
+	}
+}
+
+func TestDescribe_Periodic(t *testing.T) {
+	svc := NewService()
+	tests := []struct {
+		interval string
+		contains string
+	}{
+		{"hourly", "Hourly"},
+		{"daily", "Daily"},
+		{"weekly", "Weekly"},
+		{"monthly", "Monthly"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.interval, func(t *testing.T) {
+			desc := svc.Describe(domain.ScheduleSpec{
+				Kind:       domain.ScheduleKindPeriodic,
+				Expression: tt.interval,
+			})
+			if !strings.Contains(desc, tt.contains) {
+				t.Errorf("expected description to contain %q, got %q", tt.contains, desc)
+			}
+			if !strings.Contains(desc, "periodic directory") {
+				t.Errorf("expected description to mention 'periodic directory', got %q", desc)
+			}
+			if !strings.Contains(desc, "run-parts") {
+				t.Errorf("expected description to mention 'run-parts', got %q", desc)
+			}
+		})
+	}
+}
