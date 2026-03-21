@@ -132,7 +132,7 @@ just run
 # Run full check (format, lint, test)
 just check
 
-# CI pipeline (check + build)
+# CI pipeline (check + build; GitHub Actions also runs race tests)
 just ci
 ```
 

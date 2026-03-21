@@ -1,0 +1,39 @@
+name: Feature request
+description: Suggest an improvement or new capability for LazyCron.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for proposing a new feature. Clear problem framing helps us keep scope practical.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem statement
+      description: What problem are you trying to solve?
+      placeholder: A clear description of the current pain point.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposed-solution
+    attributes:
+      label: Proposed solution
+      description: Describe your suggested implementation or workflow.
+      placeholder: Describe the feature and how it should behave.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What alternatives did you evaluate?
+      placeholder: Other approaches, trade-offs, or workarounds.
+
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional context
+      description: Any extra context, examples, or constraints.
