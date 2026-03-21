@@ -9,7 +9,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
-	"github.com/avinashchangrani/lazycron/internal/domain"
+	"github.com/nabobery/lazycron/internal/domain"
 )
 
 const minUsableWidth = 40

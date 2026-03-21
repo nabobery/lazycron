@@ -6,7 +6,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/avinashchangrani/lazycron/internal/domain"
+	"github.com/nabobery/lazycron/internal/domain"
 )
 
 func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {

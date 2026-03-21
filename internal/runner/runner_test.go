@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/avinashchangrani/lazycron/internal/domain"
+	"github.com/nabobery/lazycron/internal/domain"
 )
 
 func makeJob(command string) domain.CronJob {

@@ -12,7 +12,7 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/avinashchangrani/lazycron/internal/domain"
+	"github.com/nabobery/lazycron/internal/domain"
 )
 
 // FS abstracts filesystem operations for testability.

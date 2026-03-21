@@ -1,8 +1,8 @@
 package tui
 
 import (
-	"github.com/avinashchangrani/lazycron/internal/domain"
-	"github.com/avinashchangrani/lazycron/internal/platform/cronlogs"
+	"github.com/nabobery/lazycron/internal/domain"
+	"github.com/nabobery/lazycron/internal/platform/cronlogs"
 )
 
 type appState int

@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/avinashchangrani/lazycron/internal/domain"
-	"github.com/avinashchangrani/lazycron/internal/platform/crontab"
-	"github.com/avinashchangrani/lazycron/internal/platform/systemcron"
+	"github.com/nabobery/lazycron/internal/domain"
+	"github.com/nabobery/lazycron/internal/platform/crontab"
+	"github.com/nabobery/lazycron/internal/platform/systemcron"
 )
 
 var userSource = domain.CronSource{

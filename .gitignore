@@ -1,5 +1,5 @@
 # Binaries
-lazycron
+/lazycron
 *.exe
 *.exe~
 *.dll

@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/avinashchangrani/lazycron/internal/cronparse"
-	"github.com/avinashchangrani/lazycron/internal/domain"
-	"github.com/avinashchangrani/lazycron/internal/platform/crontab"
+	"github.com/nabobery/lazycron/internal/cronparse"
+	"github.com/nabobery/lazycron/internal/domain"
+	"github.com/nabobery/lazycron/internal/platform/crontab"
 )
 
 type DriftError struct {

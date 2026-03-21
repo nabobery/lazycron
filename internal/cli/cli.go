@@ -13,14 +13,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/avinashchangrani/lazycron/internal/app"
-	"github.com/avinashchangrani/lazycron/internal/cronparse"
-	"github.com/avinashchangrani/lazycron/internal/domain"
-	"github.com/avinashchangrani/lazycron/internal/platform/cronlogs"
-	"github.com/avinashchangrani/lazycron/internal/platform/crontab"
-	"github.com/avinashchangrani/lazycron/internal/platform/systemcron"
-	"github.com/avinashchangrani/lazycron/internal/runner"
-	"github.com/avinashchangrani/lazycron/internal/schedule"
+	"github.com/nabobery/lazycron/internal/app"
+	"github.com/nabobery/lazycron/internal/cronparse"
+	"github.com/nabobery/lazycron/internal/domain"
+	"github.com/nabobery/lazycron/internal/platform/cronlogs"
+	"github.com/nabobery/lazycron/internal/platform/crontab"
+	"github.com/nabobery/lazycron/internal/platform/systemcron"
+	"github.com/nabobery/lazycron/internal/runner"
+	"github.com/nabobery/lazycron/internal/schedule"
 )
 
 func parseFlags(fs *flag.FlagSet, args []string) (ok bool, helpRequested bool) {

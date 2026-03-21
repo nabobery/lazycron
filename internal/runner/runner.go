@@ -11,7 +11,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/avinashchangrani/lazycron/internal/domain"
+	"github.com/nabobery/lazycron/internal/domain"
 )
 
 const defaultMaxOutputBytes = 1024 * 1024 // 1MB

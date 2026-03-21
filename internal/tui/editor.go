@@ -9,8 +9,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
-	"github.com/avinashchangrani/lazycron/internal/app"
-	"github.com/avinashchangrani/lazycron/internal/domain"
+	"github.com/nabobery/lazycron/internal/app"
+	"github.com/nabobery/lazycron/internal/domain"
 )
 
 func (m *Model) openCreateEditor() {

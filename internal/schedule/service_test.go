@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/avinashchangrani/lazycron/internal/domain"
+	"github.com/nabobery/lazycron/internal/domain"
 )
 
 var fixedNow = time.Date(2026, 3, 20, 12, 0, 0, 0, time.UTC)

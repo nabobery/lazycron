@@ -2,7 +2,7 @@
 
 **Generated:** 2026-03-20
 **Branch:** main
-**Module:** github.com/avinashchangrani/lazycron
+**Module:** github.com/nabobery/lazycron
 
 ## OVERVIEW
 

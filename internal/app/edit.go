@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/avinashchangrani/lazycron/internal/domain"
+	"github.com/nabobery/lazycron/internal/domain"
 )
 
 // ValidationError wraps field-level validation errors for display in the editor.

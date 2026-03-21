@@ -3,9 +3,9 @@ package app
 import (
 	"context"
 
-	"github.com/avinashchangrani/lazycron/internal/cronparse"
-	"github.com/avinashchangrani/lazycron/internal/domain"
-	"github.com/avinashchangrani/lazycron/internal/platform/systemcron"
+	"github.com/nabobery/lazycron/internal/cronparse"
+	"github.com/nabobery/lazycron/internal/domain"
+	"github.com/nabobery/lazycron/internal/platform/systemcron"
 )
 
 // Inventory holds the merged result of user + system cron sources.

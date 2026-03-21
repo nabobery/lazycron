@@ -5,9 +5,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/avinashchangrani/lazycron/internal/cronparse"
-	"github.com/avinashchangrani/lazycron/internal/domain"
-	"github.com/avinashchangrani/lazycron/internal/platform/crontab"
+	"github.com/nabobery/lazycron/internal/cronparse"
+	"github.com/nabobery/lazycron/internal/domain"
+	"github.com/nabobery/lazycron/internal/platform/crontab"
 )
 
 var testSource = domain.CronSource{

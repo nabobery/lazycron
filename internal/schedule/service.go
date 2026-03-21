@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/avinashchangrani/lazycron/internal/domain"
+	"github.com/nabobery/lazycron/internal/domain"
 	cron "github.com/robfig/cron/v3"
 )
 

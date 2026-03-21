@@ -1,4 +1,4 @@
-module github.com/avinashchangrani/lazycron
+module github.com/nabobery/lazycron
 
 go 1.25.0
 

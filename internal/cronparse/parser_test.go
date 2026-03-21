@@ -3,8 +3,8 @@ package cronparse
 import (
 	"testing"
 
-	"github.com/avinashchangrani/lazycron/internal/domain"
-	"github.com/avinashchangrani/lazycron/internal/testutil"
+	"github.com/nabobery/lazycron/internal/domain"
+	"github.com/nabobery/lazycron/internal/testutil"
 )
 
 var testSource = domain.CronSource{
