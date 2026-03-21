@@ -17,6 +17,27 @@ Terminal UI implementation using Bubble Tea v2 MVU pattern.
 | `editor.go` | Modal create/edit form with field navigation + validation |
 | `model_test.go` | Model state transition tests |
 
+## MODEL FIELDS
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `logsProvider` | `cronlogs.Provider` | System log fetcher (set via SetLogsProvider) |
+| `systemLogs` | `*cronlogs.Result` | Cached system log results |
+| `runEnvMode` | `domain.EnvMode` | CronLike (default) vs ShellInherit |
+
+## SYSTEM LOG FETCHING
+
+- `sysLogResultMsg` received after async log fetch
+- Logs pane shows both run output and system logs
+- Provider chain: journalctl → syslog → noop
+
+## FILTER TOKENS
+
+Enhanced filter supports:
+- `user:foo` — filter by run-as user
+- `source:bar` — filter by source path
+- Free text — matches command, schedule, ID, label
+
 ## STATE MACHINE
 
 ```

@@ -120,9 +120,10 @@ func parseJobLine(index int, raw, trimmed string, source domain.CronSource, envC
 	if err != nil {
 		line.Kind = domain.LineKindInvalid
 		line.Issue = &domain.ValidationIssue{
-			LineIndex: index,
-			Message:   err.Error(),
-			Severity:  domain.IssueSeverityWarning,
+			LineIndex:  index,
+			SourcePath: source.Path,
+			Message:    err.Error(),
+			Severity:   domain.IssueSeverityWarning,
 		}
 		return line
 	}
@@ -146,9 +147,10 @@ func parseJobLine(index int, raw, trimmed string, source domain.CronSource, envC
 	if parseErr != nil {
 		line.Kind = domain.LineKindInvalid
 		line.Issue = &domain.ValidationIssue{
-			LineIndex: index,
-			Message:   fmt.Sprintf("invalid cron expression %q: %v", expr, parseErr),
-			Severity:  domain.IssueSeverityWarning,
+			LineIndex:  index,
+			SourcePath: source.Path,
+			Message:    fmt.Sprintf("invalid cron expression %q: %v", expr, parseErr),
+			Severity:   domain.IssueSeverityWarning,
 		}
 		return line
 	}
@@ -316,14 +318,12 @@ func parseEnvAssignment(trimmed string) (key, val string, ok bool) {
 		return "", "", false
 	}
 
-	key = trimmed[:eqIdx]
-	// Env keys must be valid identifiers (letters, digits, underscores, starting with letter/underscore)
+	key = strings.TrimRight(trimmed[:eqIdx], " \t")
 	if !isValidEnvKey(key) {
 		return "", "", false
 	}
 
-	val = trimmed[eqIdx+1:]
-	// Strip surrounding quotes if present
+	val = strings.TrimLeft(trimmed[eqIdx+1:], " \t")
 	if len(val) >= 2 && ((val[0] == '"' && val[len(val)-1] == '"') || (val[0] == '\'' && val[len(val)-1] == '\'')) {
 		val = val[1 : len(val)-1]
 	}

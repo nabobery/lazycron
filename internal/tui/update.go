@@ -8,6 +8,7 @@ import (
 
 	"github.com/avinashchangrani/lazycron/internal/app"
 	"github.com/avinashchangrani/lazycron/internal/domain"
+	"github.com/avinashchangrani/lazycron/internal/platform/cronlogs"
 )
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -61,6 +62,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.logs = append(m.logs, msg.record)
 		return m, nil
 
+	case sysLogResultMsg:
+		if msg.err != nil {
+			m.bannerMsg = &banner{message: "Log fetch error: " + msg.err.Error(), isError: true}
+			return m, nil
+		}
+		m.systemLogs = &msg.result
+		if msg.result.NotFound {
+			m.bannerMsg = &banner{message: "Logs: " + msg.result.Reason}
+		} else if len(msg.result.Lines) == 0 {
+			m.bannerMsg = &banner{message: "No matching log entries found"}
+		}
+		return m, nil
+
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 
@@ -89,11 +103,27 @@ func (m Model) deleteCmd(jobID string) tea.Cmd {
 
 func (m *Model) startRun(job domain.CronJob) tea.Cmd {
 	r := m.runner
+	mode := m.runEnvMode
 	ctx, cancel := context.WithCancel(context.Background())
 	m.cancelRun = cancel
 	return func() tea.Msg {
-		rec, err := r.Run(ctx, job, domain.EnvModeCronLike)
+		rec, err := r.Run(ctx, job, mode)
 		return runResultMsg{record: rec, err: err}
+	}
+}
+
+func (m *Model) fetchSystemLogs(job domain.CronJob) tea.Cmd {
+	provider := m.logsProvider
+	return func() tea.Msg {
+		q := cronlogs.Query{
+			Command: job.Command,
+			Limit:   50,
+		}
+		if job.RunAsUser != "" {
+			q.User = job.RunAsUser
+		}
+		result, err := provider.Fetch(context.Background(), q)
+		return sysLogResultMsg{result: result, err: err}
 	}
 }
 

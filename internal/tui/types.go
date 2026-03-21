@@ -2,6 +2,7 @@ package tui
 
 import (
 	"github.com/avinashchangrani/lazycron/internal/domain"
+	"github.com/avinashchangrani/lazycron/internal/platform/cronlogs"
 )
 
 type appState int
@@ -44,6 +45,11 @@ type applyResultMsg struct {
 
 type runResultMsg struct {
 	record domain.RunRecord
+	err    error
+}
+
+type sysLogResultMsg struct {
+	result cronlogs.Result
 	err    error
 }
 

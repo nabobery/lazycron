@@ -2,6 +2,8 @@ package runner
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -174,6 +176,215 @@ func TestRun_CronLikeEnvNoDuplicateKeys(t *testing.T) {
 				t.Fatalf("expected PATH=/custom/bin, got %s", e)
 			}
 		}
+	}
+}
+
+func TestRun_CronLikeHonorsSHELL(t *testing.T) {
+	r := New(DefaultConfig())
+	// Create a temp script that acts as a custom shell
+	dir := t.TempDir()
+	shellPath := dir + "/myshell"
+	if err := os.WriteFile(shellPath, []byte("#!/bin/sh\necho CUSTOM_SHELL_USED\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	job := makeJob("unused-arg")
+	job.EnvContext = []domain.EnvAssignment{
+		{Key: "SHELL", Value: shellPath},
+	}
+	rec, err := r.Run(context.Background(), job, domain.EnvModeCronLike)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(rec.Stdout, "CUSTOM_SHELL_USED") {
+		t.Fatalf("expected SHELL override to be honored, got stdout:\n%s\nstderr:\n%s", rec.Stdout, rec.Stderr)
+	}
+}
+
+func TestRun_CronLikeSetsCwdToHOME(t *testing.T) {
+	r := New(DefaultConfig())
+	dir := t.TempDir()
+	// Resolve symlinks (macOS /var -> /private/var)
+	realDir, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := makeJob("pwd")
+	job.EnvContext = []domain.EnvAssignment{
+		{Key: "HOME", Value: realDir},
+	}
+	rec, runErr := r.Run(context.Background(), job, domain.EnvModeCronLike)
+	if runErr != nil {
+		t.Fatalf("unexpected error: %v", runErr)
+	}
+	got := strings.TrimSpace(rec.Stdout)
+	if got != realDir {
+		t.Fatalf("expected cwd %q, got %q", realDir, got)
+	}
+}
+
+func TestRun_CronLikePercentSemantics(t *testing.T) {
+	r := New(DefaultConfig())
+
+	tests := []struct {
+		name    string
+		command string
+		stdout  string
+	}{
+		{
+			name:    "first percent splits stdin",
+			command: "cat%hello",
+			stdout:  "hello\n",
+		},
+		{
+			name:    "multiple percents become newlines in stdin",
+			command: "cat%hello%world",
+			stdout:  "hello\nworld\n",
+		},
+		{
+			name:    "escaped percent is literal",
+			command: `echo 100\%`,
+			stdout:  "100%\n",
+		},
+		{
+			name:    "no percent passes normally",
+			command: "echo no-percent",
+			stdout:  "no-percent\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			job := makeJob(tt.command)
+			rec, err := r.Run(context.Background(), job, domain.EnvModeCronLike)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if rec.Stdout != tt.stdout {
+				t.Fatalf("expected stdout %q, got %q\nstderr: %s", tt.stdout, rec.Stdout, rec.Stderr)
+			}
+		})
+	}
+}
+
+func TestRun_CronLikeLOGNAMENotOverridable(t *testing.T) {
+	r := New(DefaultConfig())
+	job := makeJob("echo $LOGNAME")
+	job.EnvContext = []domain.EnvAssignment{
+		{Key: "LOGNAME", Value: "hacker"},
+	}
+	rec, err := r.Run(context.Background(), job, domain.EnvModeCronLike)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := strings.TrimSpace(rec.Stdout)
+	if got == "hacker" {
+		t.Fatal("LOGNAME should not be overridable via env context")
+	}
+	// Should be the current user
+	expected := currentUser()
+	if got != expected {
+		t.Fatalf("expected LOGNAME %q, got %q", expected, got)
+	}
+}
+
+func TestRun_CronLikeTZPropagation(t *testing.T) {
+	r := New(DefaultConfig())
+	job := makeJob("echo $TZ")
+	job.Schedule.Timezone = "America/New_York"
+	rec, err := r.Run(context.Background(), job, domain.EnvModeCronLike)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := strings.TrimSpace(rec.Stdout)
+	if got != "America/New_York" {
+		t.Fatalf("expected TZ=America/New_York, got %q", got)
+	}
+}
+
+func TestRun_ShellInheritIgnoresPercentSemantics(t *testing.T) {
+	r := New(DefaultConfig())
+	job := makeJob("echo hello%world")
+	rec, err := r.Run(context.Background(), job, domain.EnvModeShellInherit)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// In shell_inherit mode, % should be treated literally by the shell
+	if !strings.Contains(rec.Stdout, "hello%world") {
+		t.Fatalf("expected literal %% in shell_inherit mode, got %q", rec.Stdout)
+	}
+}
+
+func TestRun_CronLikeShellLastAssignmentWins(t *testing.T) {
+	r := New(DefaultConfig())
+	dir := t.TempDir()
+	shellPath := dir + "/lastshell"
+	if err := os.WriteFile(shellPath, []byte("#!/bin/sh\necho LAST_SHELL_WINS\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	job := makeJob("unused-arg")
+	job.EnvContext = []domain.EnvAssignment{
+		{Key: "SHELL", Value: "/bin/sh"},
+		{Key: "SHELL", Value: shellPath},
+	}
+	rec, err := r.Run(context.Background(), job, domain.EnvModeCronLike)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(rec.Stdout, "LAST_SHELL_WINS") {
+		t.Fatalf("expected last SHELL assignment to win, got stdout:\n%s\nstderr:\n%s", rec.Stdout, rec.Stderr)
+	}
+}
+
+func TestBuildCronLikeEnv_ShellLastAssignmentInEnvList(t *testing.T) {
+	env := buildCronLikeEnv([]domain.EnvAssignment{
+		{Key: "SHELL", Value: "/bin/bash"},
+		{Key: "SHELL", Value: "/bin/zsh"},
+	})
+	got := envListValue(env, "SHELL")
+	if got != "/bin/zsh" {
+		t.Fatalf("expected SHELL=/bin/zsh in env list, got SHELL=%s\nfull env: %v", got, env)
+	}
+}
+
+func TestRun_CronLikeUSERNotOverridable(t *testing.T) {
+	r := New(DefaultConfig())
+	job := makeJob("echo $USER")
+	job.EnvContext = []domain.EnvAssignment{
+		{Key: "USER", Value: "hacker"},
+	}
+	rec, err := r.Run(context.Background(), job, domain.EnvModeCronLike)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := strings.TrimSpace(rec.Stdout)
+	if got == "hacker" {
+		t.Fatal("USER should not be overridable via env context")
+	}
+	expected := currentUser()
+	if got != expected {
+		t.Fatalf("expected USER %q, got %q", expected, got)
+	}
+}
+
+func TestBuildCronLikeEnv_USERAlwaysPresent(t *testing.T) {
+	env := buildCronLikeEnv(nil)
+	got := envListValue(env, "USER")
+	expected := currentUser()
+	if got != expected {
+		t.Fatalf("expected USER=%s in env, got USER=%s\nfull env: %v", expected, got, env)
+	}
+}
+
+func TestBuildCronLikeEnv_USERNotEmpty(t *testing.T) {
+	env := buildCronLikeEnv([]domain.EnvAssignment{
+		{Key: "USER", Value: "attacker"},
+	})
+	got := envListValue(env, "USER")
+	if got == "" {
+		t.Fatalf("USER should never be empty, full env: %v", env)
+	}
+	if got == "attacker" {
+		t.Fatalf("USER should be pinned, not overridable, full env: %v", env)
 	}
 }
 

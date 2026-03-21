@@ -159,6 +159,21 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+	case "l":
+		job := m.selectedJob()
+		if job != nil && m.state == stateReady && m.logsProvider != nil {
+			return m, m.fetchSystemLogs(*job)
+		}
+
+	case "E":
+		if m.runEnvMode == domain.EnvModeCronLike {
+			m.runEnvMode = domain.EnvModeShellInherit
+			m.bannerMsg = &banner{message: "Run mode: shell_inherit"}
+		} else {
+			m.runEnvMode = domain.EnvModeCronLike
+			m.bannerMsg = &banner{message: "Run mode: cron_like"}
+		}
+
 	case "g":
 		m.selected = 0
 	case "G":

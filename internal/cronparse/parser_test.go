@@ -520,6 +520,38 @@ func TestParse_UserJobIDsPreserveFormat(t *testing.T) {
 	}
 }
 
+func TestParse_EnvAssignmentWithSpaces(t *testing.T) {
+	input := "SHELL = /bin/bash\nPATH =/usr/local/bin:/usr/bin\nMAILTO= ops@example.com\n0 3 * * * /usr/local/bin/backup\n"
+	doc, jobs, issues := Parse(input, testSource)
+
+	if len(issues) != 0 {
+		t.Fatalf("expected 0 issues, got %d: %v", len(issues), issues)
+	}
+
+	envLines := 0
+	for _, line := range doc.Lines {
+		if line.Kind == domain.LineKindEnv {
+			envLines++
+		}
+	}
+	if envLines != 3 {
+		t.Fatalf("expected 3 env lines, got %d", envLines)
+	}
+
+	// Verify SHELL was parsed correctly
+	if doc.Lines[0].EnvKey != "SHELL" || doc.Lines[0].EnvVal != "/bin/bash" {
+		t.Errorf("expected SHELL=/bin/bash, got %s=%s", doc.Lines[0].EnvKey, doc.Lines[0].EnvVal)
+	}
+
+	// Job should have all 3 env vars in context
+	if len(jobs) != 1 {
+		t.Fatalf("expected 1 job, got %d", len(jobs))
+	}
+	if len(jobs[0].EnvContext) != 3 {
+		t.Fatalf("expected 3 env context entries, got %d", len(jobs[0].EnvContext))
+	}
+}
+
 func TestBuildPeriodicJob(t *testing.T) {
 	src := domain.CronSource{
 		Kind:    domain.SourceKindSystem,

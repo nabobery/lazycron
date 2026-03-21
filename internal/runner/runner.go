@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"syscall"
 	"time"
 
@@ -39,8 +40,29 @@ func (r *Runner) Run(ctx context.Context, job domain.CronJob, mode domain.EnvMod
 		Status:    domain.RunStatusRunning,
 	}
 
-	cmd := exec.Command("/bin/sh", "-c", job.Command)
+	command, stdinData := job.Command, ""
+	if mode == domain.EnvModeCronLike {
+		command, stdinData = applyPercentSemantics(job.Command)
+	}
+
+	var env []string
+	shell := "/bin/sh"
+	if mode == domain.EnvModeCronLike {
+		env = buildCronLikeEnv(job.EnvContext)
+		if job.Schedule.Timezone != "" {
+			env = appendOrReplace(env, "TZ", job.Schedule.Timezone)
+		}
+		if s := envListValue(env, "SHELL"); s != "" {
+			shell = s
+		}
+	}
+
+	cmd := exec.Command(shell, "-c", command)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
+	if stdinData != "" {
+		cmd.Stdin = strings.NewReader(stdinData)
+	}
 
 	var stdout, stderr boundedBuffer
 	stdout.max = r.cfg.MaxOutputBytes
@@ -49,7 +71,10 @@ func (r *Runner) Run(ctx context.Context, job domain.CronJob, mode domain.EnvMod
 	cmd.Stderr = &stderr
 
 	if mode == domain.EnvModeCronLike {
-		cmd.Env = buildCronLikeEnv(job.EnvContext)
+		cmd.Env = env
+		if home := envListValue(env, "HOME"); home != "" {
+			cmd.Dir = home
+		}
 	}
 
 	if err := cmd.Start(); err != nil {
@@ -101,32 +126,39 @@ func (r *Runner) Run(ctx context.Context, job domain.CronJob, mode domain.EnvMod
 	return rec, nil
 }
 
+// pinnedKeys are env vars that cron does not allow users to override.
+var pinnedKeys = map[string]bool{
+	"LOGNAME": true,
+	"USER":    true,
+}
+
 func buildCronLikeEnv(envContext []domain.EnvAssignment) []string {
+	user := currentUser()
 	defaults := map[string]string{
 		"HOME":    homeDir(),
-		"LOGNAME": currentUser(),
+		"LOGNAME": user,
+		"USER":    user,
 		"PATH":    "/usr/bin:/bin",
 		"SHELL":   "/bin/sh",
 	}
 
-	// envContext overrides defaults
 	for _, ea := range envContext {
+		if pinnedKeys[ea.Key] {
+			continue
+		}
 		defaults[ea.Key] = ea.Value
 	}
 
-	// Deterministic ordering: defaults first (sorted), then any extra keys from envContext
 	seen := make(map[string]bool, len(defaults))
 	env := make([]string, 0, len(defaults))
 
-	// Emit in a stable order: known defaults first
-	for _, key := range []string{"HOME", "LOGNAME", "PATH", "SHELL"} {
+	for _, key := range []string{"HOME", "LOGNAME", "USER", "PATH", "SHELL"} {
 		if val, ok := defaults[key]; ok {
 			env = append(env, key+"="+val)
 			seen[key] = true
 		}
 	}
 
-	// Then any extra keys from envContext in their original order
 	for _, ea := range envContext {
 		if !seen[ea.Key] {
 			env = append(env, ea.Key+"="+defaults[ea.Key])
@@ -178,4 +210,62 @@ func (b *boundedBuffer) Write(p []byte) (int, error) {
 
 func (b *boundedBuffer) String() string {
 	return b.buf.String()
+}
+
+// applyPercentSemantics implements cron's % handling: the first unescaped %
+// splits the command from stdin data; subsequent unescaped %s become newlines
+// in the stdin portion. Escaped \% becomes literal %.
+func applyPercentSemantics(raw string) (command, stdin string) {
+	var cmd, rest strings.Builder
+	inStdin := false
+	for i := 0; i < len(raw); i++ {
+		ch := raw[i]
+		if ch == '\\' && i+1 < len(raw) && raw[i+1] == '%' {
+			if inStdin {
+				rest.WriteByte('%')
+			} else {
+				cmd.WriteByte('%')
+			}
+			i++
+			continue
+		}
+		if ch == '%' {
+			if !inStdin {
+				inStdin = true
+			} else {
+				rest.WriteByte('\n')
+			}
+			continue
+		}
+		if inStdin {
+			rest.WriteByte(ch)
+		} else {
+			cmd.WriteByte(ch)
+		}
+	}
+	if rest.Len() > 0 {
+		return cmd.String(), rest.String() + "\n"
+	}
+	return cmd.String(), ""
+}
+
+func envListValue(env []string, key string) string {
+	prefix := key + "="
+	for _, e := range env {
+		if strings.HasPrefix(e, prefix) {
+			return e[len(prefix):]
+		}
+	}
+	return ""
+}
+
+func appendOrReplace(env []string, key, value string) []string {
+	prefix := key + "="
+	for i, e := range env {
+		if strings.HasPrefix(e, prefix) {
+			env[i] = key + "=" + value
+			return env
+		}
+	}
+	return append(env, key+"="+value)
 }

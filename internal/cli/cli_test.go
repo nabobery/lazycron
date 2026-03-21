@@ -2,13 +2,17 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io/fs"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/avinashchangrani/lazycron/internal/domain"
+	"github.com/avinashchangrani/lazycron/internal/platform/cronlogs"
 	"github.com/avinashchangrani/lazycron/internal/platform/crontab"
 	"github.com/avinashchangrani/lazycron/internal/platform/systemcron"
 	"github.com/avinashchangrani/lazycron/internal/runner"
@@ -546,6 +550,249 @@ func TestList_JSON_UserJobHasSource(t *testing.T) {
 	}
 	if srcMap["path"] != "crontab://current-user" {
 		t.Errorf("expected source.path=crontab://current-user, got %v", srcMap["path"])
+	}
+}
+
+// --- Logs command tests ---
+
+type fakeLogsProvider struct {
+	result    cronlogs.Result
+	err       error
+	lastQuery cronlogs.Query
+}
+
+func (f *fakeLogsProvider) Name() string { return "fake" }
+func (f *fakeLogsProvider) Fetch(_ context.Context, q cronlogs.Query) (cronlogs.Result, error) {
+	f.lastQuery = q
+	return f.result, f.err
+}
+
+func TestLogs_ShowsEntries(t *testing.T) {
+	content := "0 3 * * * /usr/local/bin/backup-db\n"
+	deps := testDeps(content, true)
+	deps.LogsProvider = &fakeLogsProvider{
+		result: cronlogs.Result{
+			Lines:  []string{"Mar 21 10:00:01 host CRON[1234]: (root) CMD (/usr/local/bin/backup-db)"},
+			Source: "fake-source",
+		},
+	}
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"lazycron", "logs"}, &stdout, &stderr, deps)
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d; stderr: %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "backup-db") {
+		t.Fatalf("expected log output to contain backup-db, got: %s", stdout.String())
+	}
+}
+
+func TestLogs_NotAvailable(t *testing.T) {
+	deps := testDeps("", false)
+	deps.LogsProvider = &fakeLogsProvider{
+		result: cronlogs.Result{NotFound: true, Reason: "test not available"},
+	}
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"lazycron", "logs"}, &stdout, &stderr, deps)
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "test not available") {
+		t.Fatalf("expected not-available reason in stderr, got: %s", stderr.String())
+	}
+}
+
+func TestLogs_WithJobID(t *testing.T) {
+	content := "0 3 * * * /usr/local/bin/backup-db\n"
+	deps := testDeps(content, true)
+	deps.LogsProvider = &fakeLogsProvider{
+		result: cronlogs.Result{
+			Lines:  []string{"matched log line"},
+			Source: "fake-source",
+		},
+	}
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"lazycron", "logs", "user_crontab:testuser:line-0"}, &stdout, &stderr, deps)
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d; stderr: %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "matched log line") {
+		t.Fatalf("expected log output, got: %s", stdout.String())
+	}
+}
+
+func TestLogs_JobNotFound(t *testing.T) {
+	content := "0 3 * * * /usr/local/bin/backup-db\n"
+	deps := testDeps(content, true)
+	deps.LogsProvider = &fakeLogsProvider{}
+	var stderr bytes.Buffer
+	code := Run([]string{"lazycron", "logs", "nonexistent-id"}, &bytes.Buffer{}, &stderr, deps)
+	if code != 1 {
+		t.Fatalf("expected exit 1, got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "not found") {
+		t.Fatalf("expected 'not found' in stderr, got: %s", stderr.String())
+	}
+}
+
+func TestLogs_SinceRelative(t *testing.T) {
+	tests := []struct {
+		name     string
+		since    string
+		wantErr  bool
+		checkAge time.Duration
+	}{
+		{name: "1 hour ago", since: "1 hour ago", checkAge: time.Hour},
+		{name: "2 hours ago", since: "2 hours ago", checkAge: 2 * time.Hour},
+		{name: "30 minutes ago", since: "30 minutes ago", checkAge: 30 * time.Minute},
+		{name: "1 minute ago", since: "1 minute ago", checkAge: time.Minute},
+		{name: "7 days ago", since: "7 days ago", checkAge: 7 * 24 * time.Hour},
+		{name: "1 day ago", since: "1 day ago", checkAge: 24 * time.Hour},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			deps := testDeps("", false)
+			provider := &fakeLogsProvider{
+				result: cronlogs.Result{Source: "fake"},
+			}
+			deps.LogsProvider = provider
+			var stdout, stderr bytes.Buffer
+			code := Run([]string{"lazycron", "logs", "--since", tt.since}, &stdout, &stderr, deps)
+			if tt.wantErr {
+				if code == 0 {
+					t.Fatal("expected error exit code")
+				}
+				return
+			}
+			if code != 0 {
+				t.Fatalf("expected exit 0, got %d; stderr: %s", code, stderr.String())
+			}
+			if provider.lastQuery.Since.IsZero() {
+				t.Fatal("expected Since to be set")
+			}
+			elapsed := time.Since(provider.lastQuery.Since)
+			tolerance := 5 * time.Second
+			if elapsed < tt.checkAge-tolerance || elapsed > tt.checkAge+tolerance {
+				t.Fatalf("expected Since ~%v ago, got %v ago", tt.checkAge, elapsed)
+			}
+		})
+	}
+}
+
+func TestLogs_SinceAbsolute(t *testing.T) {
+	deps := testDeps("", false)
+	provider := &fakeLogsProvider{
+		result: cronlogs.Result{Source: "fake"},
+	}
+	deps.LogsProvider = provider
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"lazycron", "logs", "--since", "2024-06-15"}, &stdout, &stderr, deps)
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d; stderr: %s", code, stderr.String())
+	}
+	expected, _ := time.Parse("2006-01-02", "2024-06-15")
+	if !provider.lastQuery.Since.Equal(expected) {
+		t.Fatalf("expected Since=%v, got %v", expected, provider.lastQuery.Since)
+	}
+}
+
+// --- Export command tests ---
+
+func TestExport_WritesToStdout(t *testing.T) {
+	content := "0 3 * * * /usr/local/bin/backup-db\n"
+	deps := testDeps(content, true)
+	var stdout bytes.Buffer
+	code := Run([]string{"lazycron", "export"}, &stdout, &bytes.Buffer{}, deps)
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+	if stdout.String() != content {
+		t.Fatalf("expected exact crontab content, got: %q", stdout.String())
+	}
+}
+
+func TestExport_WritesToFile(t *testing.T) {
+	content := "0 3 * * * /usr/local/bin/backup-db\n"
+	deps := testDeps(content, true)
+	dir := t.TempDir()
+	outPath := filepath.Join(dir, "backup.crontab")
+	var stderr bytes.Buffer
+	code := Run([]string{"lazycron", "export", "--out", outPath}, &bytes.Buffer{}, &stderr, deps)
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d; stderr: %s", code, stderr.String())
+	}
+	data, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("failed to read exported file: %v", err)
+	}
+	if string(data) != content {
+		t.Fatalf("expected exact crontab content in file, got: %q", string(data))
+	}
+}
+
+// --- Import command tests ---
+
+func TestImport_DryRun(t *testing.T) {
+	content := "0 3 * * * /usr/local/bin/backup-db\n"
+	deps := testDeps("", false)
+	dir := t.TempDir()
+	importPath := filepath.Join(dir, "import.crontab")
+	if err := os.WriteFile(importPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var stdout bytes.Buffer
+	code := Run([]string{"lazycron", "import", "--from", importPath}, &stdout, &bytes.Buffer{}, deps)
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "Parsed 1 jobs") {
+		t.Fatalf("expected dry-run output, got: %s", out)
+	}
+	if !strings.Contains(out, "Dry run") {
+		t.Fatalf("expected 'Dry run' message, got: %s", out)
+	}
+	// Should NOT have applied
+	fc := deps.Client.(*crontab.FakeClient)
+	if len(fc.ApplyCalls) != 0 {
+		t.Fatalf("dry run should not call Apply, got %d calls", len(fc.ApplyCalls))
+	}
+}
+
+func TestImport_Apply(t *testing.T) {
+	content := "0 3 * * * /usr/local/bin/backup-db\n"
+	deps := testDeps("", false)
+	dir := t.TempDir()
+	importPath := filepath.Join(dir, "import.crontab")
+	if err := os.WriteFile(importPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var stdout bytes.Buffer
+	code := Run([]string{"lazycron", "import", "--from", importPath, "--yes"}, &stdout, &bytes.Buffer{}, deps)
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+	if !strings.Contains(stdout.String(), "Imported successfully") {
+		t.Fatalf("expected success message, got: %s", stdout.String())
+	}
+	fc := deps.Client.(*crontab.FakeClient)
+	if len(fc.ApplyCalls) != 1 {
+		t.Fatalf("expected 1 Apply call, got %d", len(fc.ApplyCalls))
+	}
+	if fc.ApplyCalls[0] != content {
+		t.Fatalf("expected applied content to match, got: %q", fc.ApplyCalls[0])
+	}
+}
+
+func TestImport_MissingFromFlag(t *testing.T) {
+	deps := testDeps("", false)
+	var stderr bytes.Buffer
+	code := Run([]string{"lazycron", "import"}, &bytes.Buffer{}, &stderr, deps)
+	if code != 1 {
+		t.Fatalf("expected exit 1, got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "--from is required") {
+		t.Fatalf("expected --from required error, got: %s", stderr.String())
 	}
 }
 

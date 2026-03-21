@@ -123,9 +123,10 @@ type EnvAssignment struct {
 }
 
 type ValidationIssue struct {
-	LineIndex int
-	Message   string
-	Severity  IssueSeverity
+	LineIndex  int
+	SourcePath string
+	Message    string
+	Severity   IssueSeverity
 }
 
 type IssueSeverity string

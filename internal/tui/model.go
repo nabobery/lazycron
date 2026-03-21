@@ -2,11 +2,13 @@ package tui
 
 import (
 	"context"
+	"strings"
 
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/avinashchangrani/lazycron/internal/app"
 	"github.com/avinashchangrani/lazycron/internal/domain"
+	"github.com/avinashchangrani/lazycron/internal/platform/cronlogs"
 	"github.com/avinashchangrani/lazycron/internal/runner"
 	"github.com/avinashchangrani/lazycron/internal/schedule"
 )
@@ -16,6 +18,7 @@ type Model struct {
 	inventorySvc *app.InventoryService
 	scheduleSvc  *schedule.Service
 	runner       *runner.Runner
+	logsProvider cronlogs.Provider
 	cancelRun    context.CancelFunc
 
 	width  int
@@ -30,9 +33,12 @@ type Model struct {
 	filterText  string
 	filtering   bool
 
-	logs      []domain.RunRecord
-	logScroll int
-	detScroll int
+	runEnvMode domain.EnvMode
+
+	logs       []domain.RunRecord
+	systemLogs *cronlogs.Result
+	logScroll  int
+	detScroll  int
 
 	bannerMsg *banner
 	err       error
@@ -47,12 +53,18 @@ func NewModel(applySvc *app.ApplyService, scheduleSvc *schedule.Service, r *runn
 		runner:      r,
 		state:       stateLoading,
 		focused:     paneJobs,
+		runEnvMode:  domain.EnvModeCronLike,
 	}
 }
 
 // SetInventoryService enables multi-source loading (user + system cron).
 func (m *Model) SetInventoryService(invSvc *app.InventoryService) {
 	m.inventorySvc = invSvc
+}
+
+// SetLogsProvider enables system log fetching in the TUI.
+func (m *Model) SetLogsProvider(p cronlogs.Provider) {
+	m.logsProvider = p
 }
 
 func (m Model) Init() tea.Cmd {
@@ -107,13 +119,84 @@ func (m *Model) rebuildFilter() {
 }
 
 func matchesFilter(job domain.CronJob, filter string) bool {
-	lower := toLower(filter)
-	return containsLower(job.Command, lower) ||
-		containsLower(job.Schedule.Expression, lower) ||
-		containsLower(job.ID, lower) ||
-		containsLower(job.Source.Label, lower) ||
-		containsLower(job.Source.Path, lower) ||
-		containsLower(job.RunAsUser, lower)
+	tokens, freeText := parseFilterTokens(filter)
+
+	for _, tok := range tokens {
+		if !matchesToken(job, tok) {
+			return false
+		}
+	}
+
+	if freeText != "" {
+		lower := toLower(freeText)
+		if !containsLower(job.Command, lower) &&
+			!containsLower(job.Schedule.Expression, lower) &&
+			!containsLower(job.ID, lower) &&
+			!containsLower(job.Source.Label, lower) &&
+			!containsLower(job.Source.Path, lower) &&
+			!containsLower(job.RunAsUser, lower) {
+			return false
+		}
+	}
+
+	return true
+}
+
+type filterToken struct {
+	key   string
+	value string
+}
+
+func parseFilterTokens(filter string) (tokens []filterToken, freeText string) {
+	parts := strings.Fields(filter)
+	var free []string
+	for _, p := range parts {
+		if idx := strings.IndexByte(p, ':'); idx > 0 && idx < len(p)-1 {
+			key := toLower(p[:idx])
+			value := toLower(p[idx+1:])
+			switch key {
+			case "kind", "subkind", "owner", "source", "runas", "tz":
+				tokens = append(tokens, filterToken{key: key, value: value})
+				continue
+			case "enabled", "readonly":
+				if value == "true" || value == "false" {
+					tokens = append(tokens, filterToken{key: key, value: value})
+					continue
+				}
+			}
+		}
+		free = append(free, p)
+	}
+	freeText = strings.Join(free, " ")
+	return tokens, freeText
+}
+
+func matchesToken(job domain.CronJob, tok filterToken) bool {
+	switch tok.key {
+	case "kind":
+		return containsLower(string(job.Source.Kind), tok.value)
+	case "subkind":
+		return containsLower(string(job.Source.Subkind), tok.value)
+	case "enabled":
+		if tok.value == "true" {
+			return job.Enabled
+		}
+		return !job.Enabled
+	case "readonly":
+		if tok.value == "true" {
+			return job.ReadOnly
+		}
+		return !job.ReadOnly
+	case "owner":
+		return containsLower(job.Source.Owner, tok.value)
+	case "source":
+		return containsLower(job.Source.Label, tok.value) || containsLower(job.Source.Path, tok.value)
+	case "runas":
+		return containsLower(job.RunAsUser, tok.value)
+	case "tz":
+		return containsLower(job.Schedule.Timezone, tok.value)
+	}
+	return false
 }
 
 func (m *Model) selectedJob() *domain.CronJob {

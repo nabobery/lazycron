@@ -7,12 +7,16 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"os/user"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/avinashchangrani/lazycron/internal/app"
+	"github.com/avinashchangrani/lazycron/internal/cronparse"
 	"github.com/avinashchangrani/lazycron/internal/domain"
+	"github.com/avinashchangrani/lazycron/internal/platform/cronlogs"
 	"github.com/avinashchangrani/lazycron/internal/platform/crontab"
 	"github.com/avinashchangrani/lazycron/internal/platform/systemcron"
 	"github.com/avinashchangrani/lazycron/internal/runner"
@@ -48,17 +52,21 @@ Commands:
   list        Print visible cron jobs
   validate    Check cron sources for issues
   run <id>    Run a job by ID outside the TUI
+  logs [id]   Fetch system cron log entries
+  export      Export crontab to a file
+  import      Import crontab from a file
   doctor      Show platform and adapter diagnostics
 
 Run 'lazycron <command> -h' for command-specific help.
 `
 
 type Deps struct {
-	Client      crontab.Client
-	Source      domain.CronSource
-	Runner      *runner.Runner
-	ScheduleSvc *schedule.Service
-	Discoverer  *systemcron.Discoverer
+	Client       crontab.Client
+	Source       domain.CronSource
+	Runner       *runner.Runner
+	ScheduleSvc  *schedule.Service
+	Discoverer   *systemcron.Discoverer
+	LogsProvider cronlogs.Provider
 }
 
 func DefaultDeps() Deps {
@@ -68,9 +76,10 @@ func DefaultDeps() Deps {
 			Kind: domain.SourceKindUserCrontab,
 			Path: "crontab://current-user",
 		},
-		Runner:      runner.New(runner.DefaultConfig()),
-		ScheduleSvc: schedule.NewService(),
-		Discoverer:  systemcron.New(),
+		Runner:       runner.New(runner.DefaultConfig()),
+		ScheduleSvc:  schedule.NewService(),
+		Discoverer:   systemcron.New(),
+		LogsProvider: cronlogs.NewAutoProvider(),
 	}
 }
 
@@ -86,6 +95,12 @@ func Run(args []string, stdout, stderr io.Writer, deps Deps) int {
 		return runValidate(args[2:], stdout, stderr, deps)
 	case "run":
 		return runRun(args[2:], stdout, stderr, deps)
+	case "logs":
+		return runLogs(args[2:], stdout, stderr, deps)
+	case "export":
+		return runExport(args[2:], stdout, stderr, deps)
+	case "import":
+		return runImport(args[2:], stdout, stderr, deps)
 	case "doctor":
 		return runDoctor(args[2:], stdout, stderr, deps)
 	case "-h", "--help", "help":
@@ -223,10 +238,14 @@ func runValidate(args []string, stdout, stderr io.Writer, deps Deps) int {
 
 	for _, issue := range issues {
 		var line string
+		prefix := ""
+		if issue.SourcePath != "" {
+			prefix = issue.SourcePath + ": "
+		}
 		if issue.LineIndex < 0 {
-			line = fmt.Sprintf("[%s] %s\n", issue.Severity, issue.Message)
+			line = fmt.Sprintf("%s[%s] %s\n", prefix, issue.Severity, issue.Message)
 		} else {
-			line = fmt.Sprintf("line %d: [%s] %s\n", issue.LineIndex+1, issue.Severity, issue.Message)
+			line = fmt.Sprintf("%sline %d: [%s] %s\n", prefix, issue.LineIndex+1, issue.Severity, issue.Message)
 		}
 		if err := writeString(stdout, line); err != nil {
 			if writeErr := writef(stderr, "error: %v\n", err); writeErr != nil {
@@ -439,6 +458,198 @@ func runDoctor(args []string, stdout, stderr io.Writer, deps Deps) int {
 	return 0
 }
 
+func runLogs(args []string, stdout, stderr io.Writer, deps Deps) int {
+	fs := flag.NewFlagSet("logs", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	sinceFlag := fs.String("since", "", "show logs since (e.g. '1 hour ago', '2024-01-01 00:00:00')")
+	limitFlag := fs.Int("limit", 50, "maximum number of log lines")
+	allFlag := fs.Bool("all", false, "search system sources for the job ID")
+	ok, help := parseFlags(fs, args)
+	if !ok {
+		if help {
+			return 0
+		}
+		return 1
+	}
+
+	provider := deps.LogsProvider
+	if provider == nil {
+		provider = cronlogs.NewAutoProvider()
+	}
+
+	q := cronlogs.Query{Limit: *limitFlag}
+
+	if *sinceFlag != "" {
+		t, err := parseSinceValue(*sinceFlag)
+		if err != nil {
+			_ = writef(stderr, "error: cannot parse --since %q\n", *sinceFlag)
+			return 1
+		}
+		q.Since = t
+	}
+
+	if fs.NArg() > 0 {
+		jobID := fs.Arg(0)
+		jobs, _, err := loadJobs(context.Background(), deps, *allFlag)
+		if err != nil {
+			_ = writef(stderr, "error: %v\n", err)
+			return 1
+		}
+		var target *domain.CronJob
+		for i := range jobs {
+			if jobs[i].ID == jobID {
+				target = &jobs[i]
+				break
+			}
+		}
+		if target == nil {
+			_ = writef(stderr, "error: job %q not found\n", jobID)
+			return 1
+		}
+		q.Command = target.Command
+		if target.RunAsUser != "" {
+			q.User = target.RunAsUser
+		}
+	}
+
+	result, err := provider.Fetch(context.Background(), q)
+	if err != nil {
+		_ = writef(stderr, "error: %v\n", err)
+		return 1
+	}
+
+	if result.NotFound {
+		_ = writef(stderr, "logs not available: %s\n", result.Reason)
+		return 0
+	}
+
+	if len(result.Lines) == 0 {
+		_ = writef(stdout, "No matching log entries found (source: %s)\n", result.Source)
+		return 0
+	}
+
+	for _, line := range result.Lines {
+		_ = writeln(stdout, line)
+	}
+
+	if result.Partial {
+		_ = writef(stderr, "(output truncated at %d lines)\n", *limitFlag)
+	}
+	_ = writef(stderr, "source: %s\n", result.Source)
+	return 0
+}
+
+func runExport(args []string, stdout, stderr io.Writer, deps Deps) int {
+	fs := flag.NewFlagSet("export", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	outFlag := fs.String("out", "", "output file path (default: stdout)")
+	allFlag := fs.Bool("all", false, "include system cron sources (read-only)")
+	ok, help := parseFlags(fs, args)
+	if !ok {
+		if help {
+			return 0
+		}
+		return 1
+	}
+
+	text, _, err := deps.Client.Read(context.Background())
+	if err != nil {
+		_ = writef(stderr, "error reading crontab: %v\n", err)
+		return 1
+	}
+
+	var output string
+	if *allFlag {
+		var sb strings.Builder
+		sb.WriteString("# === User crontab ===\n")
+		sb.WriteString(text)
+
+		if deps.Discoverer != nil {
+			sources, _, _ := deps.Discoverer.DiscoverAll()
+			for _, ds := range sources {
+				if ds.Text == "" {
+					continue
+				}
+				sb.WriteString("\n# === " + ds.Source.Path + " (read-only) ===\n")
+				sb.WriteString(ds.Text)
+			}
+		}
+		output = sb.String()
+	} else {
+		output = text
+	}
+
+	if *outFlag != "" {
+		if err := os.WriteFile(*outFlag, []byte(output), 0o600); err != nil {
+			_ = writef(stderr, "error writing to %s: %v\n", *outFlag, err)
+			return 1
+		}
+		_ = writef(stderr, "exported to %s\n", *outFlag)
+		return 0
+	}
+
+	_ = writeString(stdout, output)
+	return 0
+}
+
+func runImport(args []string, stdout, stderr io.Writer, deps Deps) int {
+	fs := flag.NewFlagSet("import", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fromFlag := fs.String("from", "", "file to import (required)")
+	yesFlag := fs.Bool("yes", false, "actually apply (default is dry-run)")
+	ok, help := parseFlags(fs, args)
+	if !ok {
+		if help {
+			return 0
+		}
+		return 1
+	}
+
+	if *fromFlag == "" {
+		_ = writeln(stderr, "error: --from is required")
+		return 1
+	}
+
+	data, err := os.ReadFile(*fromFlag)
+	if err != nil {
+		_ = writef(stderr, "error reading %s: %v\n", *fromFlag, err)
+		return 1
+	}
+
+	content := string(data)
+	source := domain.CronSource{
+		Kind: domain.SourceKindUserCrontab,
+		Path: *fromFlag,
+	}
+
+	_, jobs, issues := cronparse.Parse(content, source)
+	_ = writef(stdout, "Parsed %d jobs from %s\n", len(jobs), *fromFlag)
+
+	if len(issues) > 0 {
+		_ = writef(stdout, "%d issues found:\n", len(issues))
+		for _, issue := range issues {
+			_ = writef(stdout, "  line %d: [%s] %s\n", issue.LineIndex+1, issue.Severity, issue.Message)
+		}
+	}
+
+	if !*yesFlag {
+		_ = writeln(stdout, "\nDry run — no changes applied. Use --yes to apply.")
+		return 0
+	}
+
+	result, err := deps.Client.Apply(context.Background(), content)
+	if err != nil {
+		_ = writef(stderr, "error applying: %v\n", err)
+		if result.Stderr != "" {
+			_ = writef(stderr, "crontab stderr: %s\n", result.Stderr)
+		}
+		return 1
+	}
+
+	_ = writeln(stdout, "Imported successfully.")
+	return 0
+}
+
 type jsonJob struct {
 	ID       string `json:"id"`
 	Enabled  bool   `json:"enabled"`
@@ -493,4 +704,46 @@ func sanitizeJobsForJSON(jobs []domain.CronJob) []jsonJob {
 		}
 	}
 	return out
+}
+
+func parseSinceValue(s string) (time.Time, error) {
+	if t, err := time.Parse("2006-01-02 15:04:05", s); err == nil {
+		return t, nil
+	}
+	if t, err := time.Parse("2006-01-02", s); err == nil {
+		return t, nil
+	}
+	return parseRelativeTime(s)
+}
+
+func parseRelativeTime(s string) (time.Time, error) {
+	s = strings.TrimSpace(strings.ToLower(s))
+	if !strings.HasSuffix(s, " ago") {
+		return time.Time{}, fmt.Errorf("unsupported time format: %q", s)
+	}
+	s = strings.TrimSuffix(s, " ago")
+	parts := strings.Fields(s)
+	if len(parts) != 2 {
+		return time.Time{}, fmt.Errorf("unsupported relative time: %q", s)
+	}
+
+	n, err := strconv.Atoi(parts[0])
+	if err != nil || n < 0 {
+		return time.Time{}, fmt.Errorf("invalid number in relative time: %q", parts[0])
+	}
+
+	unit := strings.TrimSuffix(parts[1], "s")
+	var d time.Duration
+	switch unit {
+	case "minute":
+		d = time.Duration(n) * time.Minute
+	case "hour":
+		d = time.Duration(n) * time.Hour
+	case "day":
+		d = time.Duration(n) * 24 * time.Hour
+	default:
+		return time.Time{}, fmt.Errorf("unsupported time unit: %q", parts[1])
+	}
+
+	return time.Now().Add(-d), nil
 }

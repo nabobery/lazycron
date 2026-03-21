@@ -260,6 +260,17 @@ func (m Model) renderDetailsPane(width, height int) string {
 		}
 	}
 
+	// Issues for this job's source
+	jobIssues := m.issuesForJob(job)
+	if len(jobIssues) > 0 {
+		lines = append(lines, "")
+		lines = append(lines, warningStyle.Render("Issues:"))
+		for _, issue := range jobIssues {
+			severity := dimStyle.Render("[" + string(issue.Severity) + "]")
+			lines = append(lines, truncate(fmt.Sprintf("  %s %s", severity, issue.Message), width))
+		}
+	}
+
 	// Env context
 	if len(job.EnvContext) > 0 {
 		lines = append(lines, "")
@@ -291,55 +302,75 @@ func (m Model) renderLogsPane(width, height int) string {
 	}
 	lines = append(lines, header)
 
-	if len(m.logs) == 0 {
-		lines = append(lines, dimStyle.Render("No runs yet. Press 'x' to run a job."))
+	if len(m.logs) == 0 && m.systemLogs == nil {
+		lines = append(lines, dimStyle.Render("No runs yet. Press 'x' to run, 'l' for system logs."))
 		for len(lines) < height {
 			lines = append(lines, "")
 		}
 		return strings.Join(lines[:min(len(lines), height)], "\n")
 	}
 
-	// Show most recent log
-	rec := m.logs[len(m.logs)-1]
+	if len(m.logs) > 0 {
+		rec := m.logs[len(m.logs)-1]
 
-	statusStr := successStyle.Render("SUCCESS")
-	switch rec.Status {
-	case domain.RunStatusFailed:
-		statusStr = errorStyle.Render("FAILED")
-	case domain.RunStatusCancelled:
-		statusStr = warningStyle.Render("CANCELLED")
-	case domain.RunStatusRunning:
-		statusStr = warningStyle.Render("RUNNING")
-	}
+		statusStr := successStyle.Render("SUCCESS")
+		switch rec.Status {
+		case domain.RunStatusFailed:
+			statusStr = errorStyle.Render("FAILED")
+		case domain.RunStatusCancelled:
+			statusStr = warningStyle.Render("CANCELLED")
+		case domain.RunStatusRunning:
+			statusStr = warningStyle.Render("RUNNING")
+		}
 
-	lines = append(lines, fmt.Sprintf("%s  exit=%d  %s  mode=%s",
-		statusStr,
-		rec.ExitCode,
-		dimStyle.Render(rec.Duration.Round(time.Millisecond).String()),
-		dimStyle.Render(string(rec.Mode)),
-	))
+		lines = append(lines, fmt.Sprintf("%s  exit=%d  %s  mode=%s",
+			statusStr,
+			rec.ExitCode,
+			dimStyle.Render(rec.Duration.Round(time.Millisecond).String()),
+			dimStyle.Render(string(rec.Mode)),
+		))
 
-	if rec.Mode == domain.EnvModeCronLike {
-		lines = append(lines, warningStyle.Render("Note: ran with minimal cron-like environment"))
-	}
+		if rec.Mode == domain.EnvModeCronLike {
+			lines = append(lines, warningStyle.Render("Note: ran with minimal cron-like environment"))
+		}
 
-	if rec.Truncated {
-		lines = append(lines, warningStyle.Render("(output truncated)"))
-	}
+		if rec.Truncated {
+			lines = append(lines, warningStyle.Render("(output truncated)"))
+		}
 
-	if rec.Stdout != "" {
-		lines = append(lines, headerStyle.Render("stdout:"))
-		sanitized := stripControlCodes(strings.TrimRight(rec.Stdout, "\n"))
-		for _, l := range strings.Split(sanitized, "\n") {
-			lines = append(lines, truncate(l, width))
+		if rec.Stdout != "" {
+			lines = append(lines, headerStyle.Render("stdout:"))
+			sanitized := stripControlCodes(strings.TrimRight(rec.Stdout, "\n"))
+			for _, l := range strings.Split(sanitized, "\n") {
+				lines = append(lines, truncate(l, width))
+			}
+		}
+
+		if rec.Stderr != "" {
+			lines = append(lines, errorStyle.Render("stderr:"))
+			sanitized := stripControlCodes(strings.TrimRight(rec.Stderr, "\n"))
+			for _, l := range strings.Split(sanitized, "\n") {
+				lines = append(lines, truncate(l, width))
+			}
 		}
 	}
 
-	if rec.Stderr != "" {
-		lines = append(lines, errorStyle.Render("stderr:"))
-		sanitized := stripControlCodes(strings.TrimRight(rec.Stderr, "\n"))
-		for _, l := range strings.Split(sanitized, "\n") {
+	if m.systemLogs != nil && !m.systemLogs.NotFound && len(m.systemLogs.Lines) > 0 {
+		if len(m.logs) > 0 {
+			lines = append(lines, "")
+		}
+		lines = append(lines, headerStyle.Render("System logs:")+" "+dimStyle.Render("("+m.systemLogs.Source+")"))
+		for _, l := range m.systemLogs.Lines {
 			lines = append(lines, truncate(l, width))
+		}
+		if m.systemLogs.Partial {
+			lines = append(lines, warningStyle.Render("(output truncated)"))
+		}
+	} else if m.systemLogs != nil && len(m.logs) == 0 {
+		if m.systemLogs.NotFound {
+			lines = append(lines, dimStyle.Render("Logs: "+m.systemLogs.Reason))
+		} else {
+			lines = append(lines, dimStyle.Render("No matching log entries found ("+m.systemLogs.Source+")"))
 		}
 	}
 
@@ -353,6 +384,20 @@ func (m Model) renderLogsPane(width, height int) string {
 	}
 
 	return strings.Join(lines[:min(len(lines), height)], "\n")
+}
+
+func (m Model) issuesForJob(job *domain.CronJob) []domain.ValidationIssue {
+	var result []domain.ValidationIssue
+	jobPath := job.Source.Path
+	for _, issue := range m.issues {
+		if issue.SourcePath != "" && issue.SourcePath != jobPath {
+			continue
+		}
+		if issue.LineIndex == job.LineIndex || issue.LineIndex < 0 {
+			result = append(result, issue)
+		}
+	}
+	return result
 }
 
 func (m Model) renderHelp() string {
@@ -374,7 +419,8 @@ func (m Model) renderHelp() string {
 	case stateConfirmDiscard:
 		parts = append(parts, "y:discard  n:keep editing")
 	default:
-		parts = append(parts, "j/k:navigate  space:toggle  d:delete  x:run  n:new  e:edit  /:search  r:reload  q:quit")
+		modeLabel := string(m.runEnvMode)
+		parts = append(parts, fmt.Sprintf("j/k:navigate  space:toggle  d:delete  x:run(%s)  E:mode  l:logs  n:new  e:edit  /:search  r:reload  q:quit", modeLabel))
 	}
 
 	return helpStyle.Render(strings.Join(parts, "  "))

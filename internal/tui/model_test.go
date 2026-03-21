@@ -8,6 +8,7 @@ import (
 
 	"github.com/avinashchangrani/lazycron/internal/app"
 	"github.com/avinashchangrani/lazycron/internal/domain"
+	"github.com/avinashchangrani/lazycron/internal/platform/cronlogs"
 	"github.com/avinashchangrani/lazycron/internal/platform/crontab"
 	"github.com/avinashchangrani/lazycron/internal/runner"
 	"github.com/avinashchangrani/lazycron/internal/schedule"
@@ -913,6 +914,254 @@ func TestModel_EditorViewMultipleCalls(t *testing.T) {
 	}
 }
 
+func TestModel_ToggleRunMode(t *testing.T) {
+	m := newTestModel("0 3 * * * /bin/echo hello\n")
+	m = loadModel(m)
+
+	if m.runEnvMode != domain.EnvModeCronLike {
+		t.Fatalf("expected initial mode cron_like, got %s", m.runEnvMode)
+	}
+
+	// Press E to toggle to shell_inherit
+	updated, _ := m.Update(press('E', "E", 0))
+	m = updated.(Model)
+	if m.runEnvMode != domain.EnvModeShellInherit {
+		t.Fatalf("expected shell_inherit after toggle, got %s", m.runEnvMode)
+	}
+	if m.bannerMsg == nil || !strings.Contains(m.bannerMsg.message, "shell_inherit") {
+		t.Fatal("expected banner showing shell_inherit mode")
+	}
+
+	// Press E again to toggle back
+	updated, _ = m.Update(press('E', "E", 0))
+	m = updated.(Model)
+	if m.runEnvMode != domain.EnvModeCronLike {
+		t.Fatalf("expected cron_like after second toggle, got %s", m.runEnvMode)
+	}
+}
+
+func TestModel_RunUsesSelectedMode(t *testing.T) {
+	m := newTestModel("0 3 * * * /bin/echo hello\n")
+	m = loadModel(m)
+
+	// Toggle to shell_inherit
+	updated, _ := m.Update(press('E', "E", 0))
+	m = updated.(Model)
+
+	// Start a run
+	updated, cmd := m.Update(press('x', "x", 0))
+	m = updated.(Model)
+
+	if m.state != stateRunning {
+		t.Fatalf("expected stateRunning, got %d", m.state)
+	}
+	if cmd == nil {
+		t.Fatal("expected a command for the run")
+	}
+
+	// Execute the command and check the mode on the record
+	msg := cmd()
+	result, ok := msg.(runResultMsg)
+	if !ok {
+		t.Fatalf("expected runResultMsg, got %T", msg)
+	}
+	if result.record.Mode != domain.EnvModeShellInherit {
+		t.Fatalf("expected run record mode shell_inherit, got %s", result.record.Mode)
+	}
+}
+
+func TestModel_HelpBarShowsRunMode(t *testing.T) {
+	m := newTestModel("0 3 * * * /bin/echo hello\n")
+	m = loadModel(m)
+
+	view := m.View()
+	if !strings.Contains(view.Content, "x:run(cron_like)") {
+		t.Fatal("expected help bar to show x:run(cron_like)")
+	}
+
+	// Toggle mode
+	updated, _ := m.Update(press('E', "E", 0))
+	m = updated.(Model)
+
+	view = m.View()
+	if !strings.Contains(view.Content, "x:run(shell_inherit)") {
+		t.Fatal("expected help bar to show x:run(shell_inherit)")
+	}
+}
+
+func typeFilter(t *testing.T, m Model, text string) Model {
+	t.Helper()
+	for _, ch := range text {
+		keyText := string(ch)
+		switch ch {
+		case ':':
+			keyText = ":"
+		case ' ':
+			keyText = "space"
+		}
+		updated, _ := m.Update(press(ch, keyText, 0))
+		m = updated.(Model)
+	}
+	return m
+}
+
+func TestModel_TokenFilterKindUser(t *testing.T) {
+	m := newTestModel("0 3 * * * /usr/local/bin/backup-db\n@daily /usr/local/bin/cleanup\n")
+	m = loadModel(m)
+
+	// Mark second job as system
+	m.jobs[1].Source.Kind = domain.SourceKindSystem
+	m.jobs[1].ReadOnly = true
+
+	updated, _ := m.Update(press('/', "/", 0))
+	m = updated.(Model)
+	m = typeFilter(t, m, "kind:user")
+
+	if len(m.filteredIdx) != 1 {
+		t.Fatalf("expected 1 result for kind:user, got %d", len(m.filteredIdx))
+	}
+}
+
+func TestModel_TokenFilterEnabled(t *testing.T) {
+	m := newTestModel("0 3 * * * /usr/local/bin/backup-db\n# [lazycron-disabled] @daily /usr/local/bin/cleanup\n0 5 * * * /bin/echo ok\n")
+	m = loadModel(m)
+
+	updated, _ := m.Update(press('/', "/", 0))
+	m = updated.(Model)
+	m = typeFilter(t, m, "enabled:false")
+
+	if len(m.filteredIdx) != 1 {
+		t.Fatalf("expected 1 disabled job, got %d", len(m.filteredIdx))
+	}
+}
+
+func TestModel_TokenFilterReadonly(t *testing.T) {
+	m := newTestModel("0 3 * * * /usr/local/bin/backup-db\n@daily /usr/local/bin/cleanup\n")
+	m = loadModel(m)
+
+	m.jobs[0].ReadOnly = true
+
+	updated, _ := m.Update(press('/', "/", 0))
+	m = updated.(Model)
+	m = typeFilter(t, m, "readonly:true")
+
+	if len(m.filteredIdx) != 1 {
+		t.Fatalf("expected 1 readonly job, got %d", len(m.filteredIdx))
+	}
+}
+
+func TestModel_TokenFilterOwner(t *testing.T) {
+	m := newTestModel("0 3 * * * /usr/local/bin/backup-db\n@daily /usr/local/bin/cleanup\n")
+	m = loadModel(m)
+
+	m.jobs[0].Source.Owner = "root"
+
+	updated, _ := m.Update(press('/', "/", 0))
+	m = updated.(Model)
+	m = typeFilter(t, m, "owner:root")
+
+	if len(m.filteredIdx) != 1 {
+		t.Fatalf("expected 1 result for owner:root, got %d", len(m.filteredIdx))
+	}
+}
+
+func TestModel_TokenFilterTz(t *testing.T) {
+	m := newTestModel("0 3 * * * /usr/local/bin/backup-db\n@daily /usr/local/bin/cleanup\n")
+	m = loadModel(m)
+
+	m.jobs[0].Schedule.Timezone = "America/New_York"
+
+	updated, _ := m.Update(press('/', "/", 0))
+	m = updated.(Model)
+	m = typeFilter(t, m, "tz:new_york")
+
+	if len(m.filteredIdx) != 1 {
+		t.Fatalf("expected 1 result for tz:new_york, got %d", len(m.filteredIdx))
+	}
+}
+
+func TestModel_TokenFilterCombinedWithFreeText(t *testing.T) {
+	m := newTestModel("0 3 * * * /usr/local/bin/backup-db\n@daily /usr/local/bin/cleanup\n0 5 * * * /usr/local/bin/backup-logs\n")
+	m = loadModel(m)
+
+	updated, _ := m.Update(press('/', "/", 0))
+	m = updated.(Model)
+	m = typeFilter(t, m, "enabled:true backup")
+
+	if len(m.filteredIdx) != 2 {
+		t.Fatalf("expected 2 results for 'enabled:true backup', got %d", len(m.filteredIdx))
+	}
+}
+
+func TestModel_FreeTextFilterUnchanged(t *testing.T) {
+	m := newTestModel("0 3 * * * /usr/local/bin/backup-db\n@daily /usr/local/bin/cleanup\n")
+	m = loadModel(m)
+
+	updated, _ := m.Update(press('/', "/", 0))
+	m = updated.(Model)
+	for _, ch := range "backup" {
+		updated, _ = m.Update(press(ch, string(ch), 0))
+		m = updated.(Model)
+	}
+
+	if len(m.filteredIdx) != 1 {
+		t.Fatalf("expected 1 result for free-text 'backup', got %d", len(m.filteredIdx))
+	}
+}
+
+func TestModel_FilterTokenEnabledMaybeIsFreeText(t *testing.T) {
+	tokens, freeText := parseFilterTokens("enabled:maybe backup")
+	for _, tok := range tokens {
+		if tok.key == "enabled" {
+			t.Fatalf("enabled:maybe should not be parsed as a token, got token: %+v", tok)
+		}
+	}
+	if !strings.Contains(freeText, "enabled:maybe") {
+		t.Fatalf("expected 'enabled:maybe' in free text, got %q", freeText)
+	}
+	if !strings.Contains(freeText, "backup") {
+		t.Fatalf("expected 'backup' in free text, got %q", freeText)
+	}
+}
+
+func TestModel_FilterTokenReadonlyInvalidIsFreeText(t *testing.T) {
+	tokens, freeText := parseFilterTokens("readonly:yes")
+	for _, tok := range tokens {
+		if tok.key == "readonly" {
+			t.Fatalf("readonly:yes should not be parsed as a token, got token: %+v", tok)
+		}
+	}
+	if !strings.Contains(freeText, "readonly:yes") {
+		t.Fatalf("expected 'readonly:yes' in free text, got %q", freeText)
+	}
+}
+
+func TestModel_FilterTokenEnabledTrueIsValid(t *testing.T) {
+	tokens, _ := parseFilterTokens("enabled:true")
+	found := false
+	for _, tok := range tokens {
+		if tok.key == "enabled" && tok.value == "true" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected enabled:true to be parsed as a valid token")
+	}
+}
+
+func TestModel_FilterTokenEnabledFalseIsValid(t *testing.T) {
+	tokens, _ := parseFilterTokens("enabled:false")
+	found := false
+	for _, tok := range tokens {
+		if tok.key == "enabled" && tok.value == "false" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected enabled:false to be parsed as a valid token")
+	}
+}
+
 func TestModel_PeriodicJobShowsNonDeterministicNote(t *testing.T) {
 	m := newTestModel("0 3 * * * /usr/local/bin/backup-db\n")
 	m = loadModel(m)
@@ -927,5 +1176,131 @@ func TestModel_PeriodicJobShowsNonDeterministicNote(t *testing.T) {
 	content := view.Content
 	if !strings.Contains(content, "non-deterministic") {
 		t.Fatal("expected periodic job details to contain 'non-deterministic' note")
+	}
+}
+
+func TestModel_IssuesForJobFiltersBySource(t *testing.T) {
+	m := newTestModel("0 3 * * * /usr/local/bin/backup-db\n")
+	m = loadModel(m)
+
+	userSource := domain.CronSource{Kind: domain.SourceKindUserCrontab, Path: "user_crontab"}
+	sysSource := domain.CronSource{Kind: domain.SourceKindSystem, Path: "/etc/crontab"}
+
+	m.jobs = []domain.CronJob{
+		{
+			ID:        "user:0",
+			LineIndex: 0,
+			Source:    userSource,
+			Command:   "/usr/local/bin/backup-db",
+			Enabled:   true,
+			Schedule:  domain.ScheduleSpec{Kind: domain.ScheduleKindStandard, Expression: "0 3 * * *"},
+		},
+		{
+			ID:        "sys:0",
+			LineIndex: 0,
+			Source:    sysSource,
+			Command:   "/usr/sbin/logrotate",
+			Enabled:   true,
+			ReadOnly:  true,
+			Schedule:  domain.ScheduleSpec{Kind: domain.ScheduleKindStandard, Expression: "0 0 * * *"},
+		},
+	}
+
+	m.issues = []domain.ValidationIssue{
+		{LineIndex: 0, SourcePath: "user_crontab", Message: "user issue at line 0", Severity: domain.IssueSeverityWarning},
+		{LineIndex: 0, SourcePath: "/etc/crontab", Message: "system issue at line 0", Severity: domain.IssueSeverityWarning},
+		{LineIndex: -1, SourcePath: "/etc/crontab", Message: "source-level system issue", Severity: domain.IssueSeverityError},
+	}
+	m.filteredIdx = []int{0, 1}
+
+	userJob := &m.jobs[0]
+	userIssues := m.issuesForJob(userJob)
+	for _, issue := range userIssues {
+		if strings.Contains(issue.Message, "system issue") {
+			t.Fatalf("user job should not see system issues, got: %q", issue.Message)
+		}
+		if strings.Contains(issue.Message, "source-level system") {
+			t.Fatalf("user job should not see source-level system issues, got: %q", issue.Message)
+		}
+	}
+
+	sysJob := &m.jobs[1]
+	sysIssues := m.issuesForJob(sysJob)
+	for _, issue := range sysIssues {
+		if strings.Contains(issue.Message, "user issue") {
+			t.Fatalf("system job should not see user issues, got: %q", issue.Message)
+		}
+	}
+	foundSourceLevel := false
+	for _, issue := range sysIssues {
+		if strings.Contains(issue.Message, "source-level system") {
+			foundSourceLevel = true
+		}
+	}
+	if !foundSourceLevel {
+		t.Fatal("system job should see its source-level issues (LineIndex=-1)")
+	}
+}
+
+func TestModel_SystemLogsWithoutRunNoPanic(t *testing.T) {
+	m := newTestModel("0 3 * * * /usr/local/bin/backup-db\n")
+	m = loadModel(m)
+
+	m.systemLogs = &cronlogs.Result{
+		Lines:  []string{"Mar 21 10:00:01 host CRON[1234]: (root) CMD (/usr/local/bin/backup-db)"},
+		Source: "journalctl -u cron",
+	}
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("View() panicked with system logs but no run records: %v", r)
+		}
+	}()
+
+	view := m.View()
+	if !strings.Contains(view.Content, "System logs:") {
+		t.Fatal("expected system logs section in view")
+	}
+}
+
+func TestModel_SystemLogsNotFoundNoPanic(t *testing.T) {
+	m := newTestModel("0 3 * * * /usr/local/bin/backup-db\n")
+	m = loadModel(m)
+
+	m.systemLogs = &cronlogs.Result{
+		NotFound: true,
+		Reason:   "macOS: cron logging not available",
+	}
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("View() panicked with NotFound system logs: %v", r)
+		}
+	}()
+
+	view := m.View()
+	if view.Content == "" {
+		t.Fatal("view should not be empty")
+	}
+}
+
+func TestModel_SystemLogsEmptyLinesNoPanic(t *testing.T) {
+	m := newTestModel("0 3 * * * /usr/local/bin/backup-db\n")
+	m = loadModel(m)
+
+	m.systemLogs = &cronlogs.Result{
+		Lines:  nil,
+		Source: "syslog",
+	}
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("View() panicked with empty system logs: %v", r)
+		}
+	}()
+
+	view := m.View()
+	if view.Content == "" {
+		t.Fatal("view should not be empty")
 	}
 }

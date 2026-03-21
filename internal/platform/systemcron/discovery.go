@@ -188,9 +188,10 @@ func (d *Discoverer) discoverFile(c candidate) (*DiscoveredSource, []domain.Vali
 
 	if !readable {
 		return &DiscoveredSource{Source: src}, []domain.ValidationIssue{{
-			LineIndex: -1,
-			Message:   fmt.Sprintf("cannot read %s: %s", c.path, reason),
-			Severity:  domain.IssueSeverityWarning,
+			LineIndex:  -1,
+			SourcePath: c.path,
+			Message:    fmt.Sprintf("cannot read %s: %s", c.path, reason),
+			Severity:   domain.IssueSeverityWarning,
 		}}
 	}
 
@@ -204,9 +205,10 @@ func (d *Discoverer) discoverCronDDir(c candidate) ([]DiscoveredSource, []domain
 			return nil, nil
 		}
 		return nil, []domain.ValidationIssue{{
-			LineIndex: -1,
-			Message:   fmt.Sprintf("cannot read directory %s: %v", c.path, err),
-			Severity:  domain.IssueSeverityWarning,
+			LineIndex:  -1,
+			SourcePath: c.path,
+			Message:    fmt.Sprintf("cannot read directory %s: %v", c.path, err),
+			Severity:   domain.IssueSeverityWarning,
 		}}
 	}
 
@@ -264,9 +266,10 @@ func (d *Discoverer) discoverPeriodicDir(c candidate) ([]PeriodicEntry, []domain
 			return nil, nil
 		}
 		return nil, []domain.ValidationIssue{{
-			LineIndex: -1,
-			Message:   fmt.Sprintf("cannot read directory %s: %v", c.path, err),
-			Severity:  domain.IssueSeverityWarning,
+			LineIndex:  -1,
+			SourcePath: c.path,
+			Message:    fmt.Sprintf("cannot read directory %s: %v", c.path, err),
+			Severity:   domain.IssueSeverityWarning,
 		}}
 	}
 
@@ -313,16 +316,18 @@ func (d *Discoverer) discoverPeriodicDir(c candidate) ([]PeriodicEntry, []domain
 
 		if !validName {
 			issues = append(issues, domain.ValidationIssue{
-				LineIndex: -1,
-				Message:   fmt.Sprintf("%s: name %q may be skipped by run-parts (contains dots or special chars)", filePath, name),
-				Severity:  domain.IssueSeverityWarning,
+				LineIndex:  -1,
+				SourcePath: filePath,
+				Message:    fmt.Sprintf("%s: name %q may be skipped by run-parts (contains dots or special chars)", filePath, name),
+				Severity:   domain.IssueSeverityWarning,
 			})
 		}
 		if !executable {
 			issues = append(issues, domain.ValidationIssue{
-				LineIndex: -1,
-				Message:   fmt.Sprintf("%s: not executable", filePath),
-				Severity:  domain.IssueSeverityWarning,
+				LineIndex:  -1,
+				SourcePath: filePath,
+				Message:    fmt.Sprintf("%s: not executable", filePath),
+				Severity:   domain.IssueSeverityWarning,
 			})
 		}
 	}

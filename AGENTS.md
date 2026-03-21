@@ -19,6 +19,7 @@ lazycron/
 │   ├── cronparse/      # Document-preserving cron parser (Parse, Render)
 │   ├── domain/         # Core types (CronJob, CronDocument, ScheduleSpec, JobDraft, etc.)
 │   ├── platform/crontab/  # crontab Client interface + system adapter
+│   ├── platform/cronlogs/ # Log providers (journalctl, syslog)
 │   ├── platform/systemcron/ # System cron discovery (/etc/crontab, /etc/cron.d, periodic)
 │   ├── runner/         # Subprocess execution with bounded output
 │   ├── schedule/       # Next-run calculation + human descriptions
@@ -46,6 +47,7 @@ lazycron/
 | TUI editor | `internal/tui/editor.go` | Modal create/edit form with preview |
 | Unified inventory | `internal/app/inventory.go` | Merges user + system cron sources |
 | System discovery | `internal/platform/systemcron/` | Discoverer reads /etc/crontab, cron.d, periodic dirs |
+| Cron log providers | `internal/platform/cronlogs/` | Provider interface + journalctl/syslog implementations |
 | Test fixtures | `internal/testutil/fixtures.go` | Shared test data |
 
 ## CONVENTIONS
@@ -66,6 +68,7 @@ lazycron/
 - Never execute jobs automatically—manual run requires explicit user action
 - Never bypass `crontab.Client` interface for direct system calls
 - Never mutate system jobs—check `ReadOnly` before allowing toggle/delete/edit
+- Never ignore percent semantics—`%` in cron commands means stdin in cron-like mode
 
 ## COMMANDS
 
